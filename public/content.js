@@ -1,89 +1,148 @@
+// Content script: detects Gmail compose boxes and offers a "Draft reply" action
+// that calls the DALM backend to generate a full Portuguese registrar reply.
 
+const RECOMMEND_ENDPOINT = "http://localhost:4000/recommend"
 
-// const MESSAGES_ENDPOINT = "https://ifetch.novasearch.org/agent/"
-const MESSAGES_ENDPOINT = "http://localhost:4000"
-
-// Uncomment 'document' field to access the full html
-//  document of th store.
-const SendMessage = async (
-    utterance, userId, sessionId,
-    userAction, selectedId, 
-    respondeCallback, /*document, */isUpToDate=false) => {
-  
-    const response = await fetch(MESSAGES_ENDPOINT, {
-      method: "POST",
-      body: JSON.stringify({
-        utterance : utterance, // The users utterance
-        user_id : userId, // The users ID 
-        session_id : sessionId, // The current session ID
-        user_action : userAction, // The users action
-        interface_selected_product_id: selectedId, // the ID of the opened product
-        image : null
-        // document: document // The HTML of the page
-      }),
-      headers: {
-        "Content-type": "application/json"
-      },
-      }).then((response) => response.json())
-      .then((data) => {
-        console.log(data)
-        respondeCallback(data, utterance, isUpToDate)
-      })
-      .catch((err) => {
-        console.log(err.message)
-      })
-
-    return response
+function getNoticeTooltip() {
+  let tooltip = document.getElementById('mail-recommender-notice')
+  if (!tooltip) {
+    tooltip = document.createElement('div')
+    tooltip.id = 'mail-recommender-notice'
+    tooltip.style.cssText = `
+      position: fixed;
+      background: white;
+      border: 1px solid #dadce0;
+      border-radius: 4px;
+      padding: 8px 12px;
+      font-size: 13px;
+      color: #3c4043;
+      max-width: 320px;
+      z-index: 99999;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+      display: none;
+    `
+    document.body.appendChild(tooltip)
   }
-
-
-const messagesFromReactAppListener = (message, sender, response) => {
-    console.log('[content.js]. Message received', {
-        message,
-        sender,
-    })
-
-    if (message.message === 'Hello from React') {
-        const text = 'FARFETCH ID: ';
-        const elements = Array.from(document.querySelectorAll('p'));
-        const match = elements.find(el => {
-            return el.textContent.toLowerCase().includes(text.toLowerCase());
-        });
-        const productID = match.innerText.slice(13) // The id of the opened item
-
-        // Get the id from the DOM 
-        //  and select it in the backend
-        SendMessage("", message.uID, message.sID, 
-            "select", productID, (data, utterance, isUpToDate) => {
-            }, false)
-        
-    }
+  return tooltip
 }
 
-// Fired when a message is sent from either an extension process or a content script.
-chrome.runtime.onMessage.addListener(messagesFromReactAppListener)
+function showNotice(button, text) {
+  const tooltip = getNoticeTooltip()
+  const rect = button.getBoundingClientRect()
+  tooltip.style.left = `${rect.left}px`
+  tooltip.style.top = `${rect.bottom + 6}px`
+  tooltip.textContent = text
+  tooltip.style.display = 'block'
+}
 
-// Edit the DOM of the page in a way that lets you add the chat 
-//  into the window. 
-const cssContent = `
-  position: fixed;
-  bottom: 23px;
-  right: 28px;
-  width: 404px;
-  height: 520px;
-  z-index: 10;
-  background: white;
-`
+function hideNotice() {
+  const tooltip = document.getElementById('mail-recommender-notice')
+  if (tooltip) tooltip.style.display = 'none'
+}
 
-const myIFrame = `
-  <iframe src="${chrome.runtime.getURL('index.html')}" 
-    style="
-      width: inherit;
-      height: inherit;
-    ">
-  </iframe>
-`
-let div = document.createElement('div')
-div.style.cssText = cssContent
-div.innerHTML = myIFrame
-document.body.insertBefore(div, document.body.firstChild)
+async function fetchRecommendation(text) {
+  const res = await fetch(RECOMMEND_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: text })
+  })
+  if (!res.ok) throw new Error(`Backend returned ${res.status}`)
+  return res.json()
+}
+
+function replaceComposeBoxText(composeBox, text) {
+  composeBox.focus()
+  composeBox.textContent = text
+  composeBox.dispatchEvent(new Event('input', { bubbles: true }))
+}
+
+function positionOverComposeBox(element, composeBox) {
+  const rect = composeBox.getBoundingClientRect()
+  element.style.top = `${rect.top + 6}px`
+  element.style.left = `${rect.right - element.offsetWidth - 6}px`
+}
+
+function createDraftButton(composeBox) {
+  const button = document.createElement('button')
+  button.textContent = 'Draft reply'
+  button.style.cssText = `
+    position: fixed;
+    z-index: 99999;
+    padding: 4px 10px;
+    font-size: 12px;
+    border: 1px solid #dadce0;
+    border-radius: 4px;
+    background: #f8f9fa;
+    color: #1a73e8;
+    cursor: pointer;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  `
+
+  button.addEventListener('click', async (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    hideNotice()
+
+    const text = composeBox.innerText || composeBox.textContent
+    if (!text.trim()) {
+      showNotice(button, 'Write something first.')
+      return
+    }
+
+    const originalLabel = button.textContent
+    button.textContent = 'Drafting…'
+    button.disabled = true
+
+    try {
+      const result = await fetchRecommendation(text)
+      if (result.in_scope && result.reply) {
+        replaceComposeBoxText(composeBox, result.reply)
+      } else {
+        showNotice(button, 'This does not look like a DALM-related question, so no reply was drafted.')
+      }
+    } catch (err) {
+      showNotice(button, 'Could not reach the recommender backend.')
+    } finally {
+      button.textContent = originalLabel
+      button.disabled = false
+    }
+  })
+
+  return button
+}
+
+function attachToComposeBox(composeBox) {
+  if (composeBox.dataset.mailRecommenderAttached) return
+  composeBox.dataset.mailRecommenderAttached = 'true'
+
+  const button = createDraftButton(composeBox)
+  document.body.appendChild(button)
+  positionOverComposeBox(button, composeBox)
+
+  const reposition = () => positionOverComposeBox(button, composeBox)
+  window.addEventListener('scroll', reposition, true)
+  window.addEventListener('resize', reposition)
+
+  // Gmail removes the compose box from the DOM when it's closed; poll for
+  // that since there's no reliable event for it.
+  const cleanupInterval = setInterval(() => {
+    if (!composeBox.isConnected) {
+      button.remove()
+      window.removeEventListener('scroll', reposition, true)
+      window.removeEventListener('resize', reposition)
+      clearInterval(cleanupInterval)
+    }
+  }, 1000)
+
+  composeBox.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') hideNotice()
+  })
+}
+
+// Watch for Gmail compose boxes being added to the DOM
+const observer = new MutationObserver(() => {
+  document.querySelectorAll('div[role="textbox"][aria-label]')
+    .forEach(attachToComposeBox)
+})
+
+observer.observe(document.body, { childList: true, subtree: true })

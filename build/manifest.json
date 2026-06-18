@@ -1,37 +1,30 @@
 {
-    "name" : "iFetch Store Extension",
-    "version" : "1.0.0",
-    "description" : "Latest verion of the iFetch chat-bot in a version of an Extension",
-    "permissions" : ["storage", "tabs"],
+    "name": "Mail Recommender",
+    "version": "0.1.0",
+    "description": "AI-powered email autocomplete and recommendations",
+    "permissions": ["storage"],
     "manifest_version": 3,
     "content_scripts": [
         {
             "matches": [
-                "https://www.farfetch.com/pt/shopping/*"
+                "https://mail.google.com/*"
             ],
             "js": [
                 "content.js"
             ]
         }
     ],
-    "background" : {
+    "background": {
         "service_worker": "ServiceWorker.js",
         "type": "module"
     },
-    "action" : {
-        "default_popup" : "index.html",
-        "default_title" : "iFetch"
+    "action": {
+        "default_popup": "index.html",
+        "default_title": "Mail Recommender"
     },
     "icons": {
-      "16": "logo192.png",
-      "48": "logo192.png",
-      "128": "logo192.png"
-    },
-    "web_accessible_resources": [
-        {
-          "resources": [ "index.html", "Window.css" ],
-          "matches": ["<all_urls>"]
-        }
-    ]
+        "16": "logo192.png",
+        "48": "logo192.png",
+        "128": "logo192.png"
+    }
 }
-  

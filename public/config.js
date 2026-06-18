@@ -1,1 +1,1 @@
-var test = "test"
+// Extension configuration — to be implemented.
