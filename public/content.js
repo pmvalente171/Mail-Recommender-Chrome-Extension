@@ -65,9 +65,18 @@ function extractOriginalEmail(composeBox) {
   return ''
 }
 
+function escapeHtml(text) {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 function replaceComposeBoxText(composeBox, text) {
   composeBox.focus()
-  composeBox.textContent = text
+  // Plain '\n' characters don't create line breaks in a contenteditable div;
+  // each line needs to be its own block element, matching Gmail's own markup.
+  composeBox.innerHTML = escapeHtml(text)
+    .split('\n')
+    .map((line) => `<div>${line || '<br>'}</div>`)
+    .join('')
   composeBox.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
