@@ -50,6 +50,21 @@ async function fetchRecommendation(text) {
   return res.json()
 }
 
+function extractOriginalEmail(composeBox) {
+  // Gmail embeds the original message as a hidden blockquote inside the
+  // reply compose box (behind the "Show trimmed content" "..." toggle).
+  // textContent reads it regardless of its collapsed/hidden state, unlike innerText.
+  const quote = composeBox.querySelector('blockquote.gmail_quote, blockquote[class*="quote"], div.gmail_quote')
+  if (quote && quote.textContent.trim()) return quote.textContent.trim()
+
+  // Fallback: the rendered message body of the thread being replied to.
+  const thread = composeBox.closest('[role="main"]') || document
+  const bodies = thread.querySelectorAll('.a3s.aiL')
+  if (bodies.length) return bodies[bodies.length - 1].textContent.trim()
+
+  return ''
+}
+
 function replaceComposeBoxText(composeBox, text) {
   composeBox.focus()
   composeBox.textContent = text
@@ -83,9 +98,11 @@ function createDraftButton(composeBox) {
     e.stopPropagation()
     hideNotice()
 
-    const text = composeBox.innerText || composeBox.textContent
-    if (!text.trim()) {
-      showNotice(button, 'Write something first.')
+    const draft = (composeBox.innerText || composeBox.textContent || '').trim()
+    const original = extractOriginalEmail(composeBox)
+    const text = original ? (draft ? `${original}\n\n${draft}` : original) : draft
+    if (!text) {
+      showNotice(button, 'Write something, or open an email to reply to, first.')
       return
     }
 
