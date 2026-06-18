@@ -3,6 +3,49 @@
 
 const RECOMMEND_ENDPOINT = "http://localhost:4000/recommend"
 
+function injectSpinnerStyle() {
+  if (document.getElementById('mail-recommender-style')) return
+  const style = document.createElement('style')
+  style.id = 'mail-recommender-style'
+  style.textContent = `
+    @keyframes mail-recommender-spin { to { transform: rotate(360deg); } }
+    .mail-recommender-spinner {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      margin-right: 6px;
+      border: 2px solid #aecbfa;
+      border-top-color: #1a73e8;
+      border-radius: 50%;
+      animation: mail-recommender-spin 0.6s linear infinite;
+      vertical-align: middle;
+    }
+  `
+  document.head.appendChild(style)
+}
+
+let lastMouseX = 0
+let lastMouseY = 0
+document.addEventListener('mousemove', (e) => {
+  lastMouseX = e.clientX
+  lastMouseY = e.clientY
+  const tooltip = document.getElementById('mail-recommender-notice')
+  if (tooltip && tooltip.style.display === 'block') {
+    positionNoticeAtCursor(tooltip)
+  }
+})
+
+function positionNoticeAtCursor(tooltip) {
+  const offset = 16
+  const rect = tooltip.getBoundingClientRect()
+  let left = lastMouseX + offset
+  let top = lastMouseY + offset
+  if (left + rect.width > window.innerWidth) left = lastMouseX - rect.width - offset
+  if (top + rect.height > window.innerHeight) top = lastMouseY - rect.height - offset
+  tooltip.style.left = `${Math.max(left, 0)}px`
+  tooltip.style.top = `${Math.max(top, 0)}px`
+}
+
 function getNoticeTooltip() {
   let tooltip = document.getElementById('mail-recommender-notice')
   if (!tooltip) {
@@ -16,23 +59,22 @@ function getNoticeTooltip() {
       padding: 8px 12px;
       font-size: 13px;
       color: #3c4043;
-      max-width: 320px;
+      max-width: 280px;
       z-index: 99999;
       box-shadow: 0 2px 6px rgba(0,0,0,0.15);
       display: none;
+      pointer-events: none;
     `
     document.body.appendChild(tooltip)
   }
   return tooltip
 }
 
-function showNotice(button, text) {
+function showNotice(text) {
   const tooltip = getNoticeTooltip()
-  const rect = button.getBoundingClientRect()
-  tooltip.style.left = `${rect.left}px`
-  tooltip.style.top = `${rect.bottom + 6}px`
   tooltip.textContent = text
   tooltip.style.display = 'block'
+  positionNoticeAtCursor(tooltip)
 }
 
 function hideNotice() {
@@ -82,11 +124,17 @@ function replaceComposeBoxText(composeBox, text) {
 
 function positionOverComposeBox(element, composeBox) {
   const rect = composeBox.getBoundingClientRect()
+  // Anchor from the right edge (not left) so the button growing wider while
+  // loading ("Draft reply" -> spinner + "Drafting reply...") expands inward
+  // instead of overflowing past the compose box's right border.
   element.style.top = `${rect.top + 6}px`
-  element.style.left = `${rect.right - element.offsetWidth - 6}px`
+  element.style.right = `${window.innerWidth - rect.right + 6}px`
+  element.style.left = 'auto'
 }
 
 function createDraftButton(composeBox) {
+  injectSpinnerStyle()
+
   const button = document.createElement('button')
   button.textContent = 'Draft reply'
   button.style.cssText = `
@@ -100,7 +148,11 @@ function createDraftButton(composeBox) {
     color: #1a73e8;
     cursor: pointer;
     box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.15s ease;
   `
+  button.dataset.busy = 'false'
 
   button.addEventListener('click', async (e) => {
     e.preventDefault()
@@ -111,26 +163,34 @@ function createDraftButton(composeBox) {
     const original = extractOriginalEmail(composeBox)
     const text = original ? (draft ? `${original}\n\n${draft}` : original) : draft
     if (!text) {
-      showNotice(button, 'Write something, or open an email to reply to, first.')
+      showNotice('Write something, or open an email to reply to, first.')
       return
     }
 
     const originalLabel = button.textContent
-    button.textContent = 'Drafting…'
+    button.dataset.busy = 'true'
     button.disabled = true
+    button.style.cursor = 'default'
+    button.style.background = '#e8f0fe'
+    button.innerHTML = '<span class="mail-recommender-spinner"></span>Drafting reply…'
+    showNotice('Drafting a reply — this can take up to a minute, hang tight…')
 
     try {
       const result = await fetchRecommendation(text)
       if (result.in_scope && result.reply) {
         replaceComposeBoxText(composeBox, result.reply)
+        hideNotice()
       } else {
-        showNotice(button, 'This does not look like a DALM-related question, so no reply was drafted.')
+        showNotice('This does not look like a DALM-related question, so no reply was drafted.')
       }
     } catch (err) {
-      showNotice(button, 'Could not reach the recommender backend.')
+      showNotice('Could not reach the recommender backend.')
     } finally {
-      button.textContent = originalLabel
+      button.dataset.busy = 'false'
       button.disabled = false
+      button.style.cursor = 'pointer'
+      button.style.background = '#f8f9fa'
+      button.textContent = originalLabel
     }
   })
 
@@ -144,6 +204,20 @@ function attachToComposeBox(composeBox) {
   const button = createDraftButton(composeBox)
   document.body.appendChild(button)
   positionOverComposeBox(button, composeBox)
+
+  const reveal = () => {
+    button.style.opacity = '1'
+    button.style.pointerEvents = 'auto'
+  }
+  const conceal = () => {
+    if (button.dataset.busy === 'true') return
+    button.style.opacity = '0'
+    button.style.pointerEvents = 'none'
+  }
+  composeBox.addEventListener('mouseenter', reveal)
+  composeBox.addEventListener('mouseleave', conceal)
+  button.addEventListener('mouseenter', reveal)
+  button.addEventListener('mouseleave', conceal)
 
   const reposition = () => positionOverComposeBox(button, composeBox)
   window.addEventListener('scroll', reposition, true)
