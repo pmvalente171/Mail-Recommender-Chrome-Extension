@@ -3,6 +3,13 @@
 
 const RECOMMEND_ENDPOINT = "http://localhost:4000/recommend"
 
+// Mock mode: skip the backend and return canned responses, for testing the UI.
+// Put a keyword in the draft to pick the outcome: !out (out of scope),
+// !error (backend failure), !long (multi-paragraph reply). Anything else
+// gets a short reply that echoes the start of the text that would be sent.
+const MOCK_MODE = true
+const MOCK_DELAY_MS = 2000
+
 function injectSpinnerStyle() {
   if (document.getElementById('mail-recommender-style')) return
   const style = document.createElement('style')
@@ -82,7 +89,38 @@ function hideNotice() {
   if (tooltip) tooltip.style.display = 'none'
 }
 
+async function mockRecommendation(text) {
+  await new Promise((resolve) => setTimeout(resolve, MOCK_DELAY_MS))
+
+  if (text.includes('!error')) throw new Error('Mock backend failure')
+  if (text.includes('!out')) return { in_scope: false, reply: '' }
+  if (text.includes('!long')) {
+    return {
+      in_scope: true,
+      reply: [
+        'Caro(a) estudante,',
+        '',
+        'Agradecemos o seu contacto. [MOCK] Este é um parágrafo de teste para verificar a formatação de respostas longas.',
+        '',
+        'Segundo parágrafo de teste, com uma linha imediatamente a seguir.',
+        'Terceira linha, sem linha em branco antes.',
+        '',
+        'Com os melhores cumprimentos,',
+        'Divisão Académica'
+      ].join('\n')
+    }
+  }
+
+  const preview = text.replace(/\s+/g, ' ').slice(0, 120)
+  return {
+    in_scope: true,
+    reply: `Caro(a) estudante,\n\n[MOCK] Resposta de teste. Texto recebido: "${preview}"\n\nCom os melhores cumprimentos,\nDivisão Académica`
+  }
+}
+
 async function fetchRecommendation(text) {
+  if (MOCK_MODE) return mockRecommendation(text)
+
   const res = await fetch(RECOMMEND_ENDPOINT, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

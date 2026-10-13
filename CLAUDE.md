@@ -28,6 +28,8 @@ Core flow:
 
 To change the backend URL, update `RECOMMEND_ENDPOINT` at the top of `public/content.js`.
 
+To test the UI without the backend, set `MOCK_MODE = true` at the top of `public/content.js` and rebuild. Responses are canned and chosen by keywords in the draft: `!out` (out of scope), `!error` (backend failure), `!long` (multi-paragraph reply); anything else returns a short reply echoing the input.
+
 ### 2. React popup (`src/`)
 Compiled by CRA into `build/static/`. Mounted by `build/index.html`, shown when the user clicks the extension icon. Currently a static informational UI. Extend `src/App.js` for settings, status, or configuration controls.
 
