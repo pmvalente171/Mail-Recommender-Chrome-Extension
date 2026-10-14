@@ -62,24 +62,81 @@ function readThread(replyBox) {
   }
 }
 
-// --- Example content --------------------------------------------------------
-// Static list from docs/handoff/prototype.html. It stands in for the POST /list
-// response until that is mocked with the real thread (build step 3).
-const EXAMPLE_LIST = {
-  request: 'um encarregado de educação quer saber se a Licenciatura em Análise e Engenharia de Dados abre vagas em 2026/27 e quais as condições de acesso.',
-  points: [
-    { id: 'c2', title: 'Vagas', desc: 'dizer quantas vagas há no concurso de 2026/27.', needs: [{ key: 'vagas', label: 'N.º de vagas' }] },
-    { id: 'c3', title: 'Condições de acesso', desc: 'indicar as provas de ingresso e a nota mínima.', needs: [{ key: 'provas', label: 'Provas de ingresso' }, { key: 'nota', label: 'Nota mínima' }] },
-    { id: 'c4', title: 'Candidatura', desc: 'explicar onde e quando se candidata.', needs: [{ key: 'datas', label: 'Datas da 1.ª fase' }] },
-    { id: 'c5', title: 'Site', desc: 'lamentar que a informação ainda não esteja no nosso site.', needs: [] }
-  ],
-  outside: 'Pedir à equipa do site que publique a página do curso.'
+// --- Personal data ----------------------------------------------------------
+// Removed in the browser before anything leaves it (HANDOFF.md rule 7). The
+// patterns are deliberately broad: a false positive costs the model a little
+// context, a miss sends personal data. Order matters (IBAN and NIB before the
+// shorter number patterns).
+// Known limitation: names are only caught when they match a sender's name as
+// Gmail shows it (full name, or any part of it). Other people mentioned in the
+// text, or signatures that spell a name differently, are not removed.
+const REDACTIONS = [
+  ['[email]', /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g],
+  ['[IBAN]', /\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,4})?\b/g],
+  ['[NIB]', /\b\d{4}[ .]?\d{4}[ .]?\d{11}[ .]?\d{2}\b/g],
+  ['[telefone]', /(?:\+|00) ?351[ .-]?\d{3}[ .-]?\d{3}[ .-]?\d{3}\b|\b[29]\d{2}[ .-]?\d{3}[ .-]?\d{3}\b/g],
+  ['[NIF]', /\b\d{9}\b/g],
+  ['[n.º de aluno]', /\b\d{5,6}\b/g]
+]
+
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+function redact(text, names) {
+  let out = text
+  for (const [label, pattern] of REDACTIONS) out = out.replace(pattern, label)
+  // Full names first, then their parts (3+ letters), longest first.
+  const parts = names.flatMap((n) => [n, ...n.split(/\s+/)])
+    .filter((n) => n.length >= 3)
+    .sort((a, b) => b.length - a.length)
+  for (const name of new Set(parts)) {
+    out = out.replace(new RegExp(`(?<!\\p{L})${escapeRegExp(name)}(?!\\p{L})`, 'gu'), '[nome]')
+  }
+  return out
+}
+
+async function sha256(text) {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+// --- Backend (through the service worker) -----------------------------------
+async function requestList(replyBox) {
+  const thread = readThread(replyBox)
+  if (!thread || !thread.text) throw new Error('No thread text')
+  const names = thread.messages.map((m) => m.from).filter(Boolean)
+  const response = await chrome.runtime.sendMessage({
+    type: 'dalm:list',
+    payload: { thread: redact(thread.text, names), ticket: await sha256(thread.threadId) }
+  })
+  if (!response || !response.ok) throw new Error(response ? response.error : 'No response')
+  return response.list
+}
+
+// Fills in defaults so the panel never has to guess at missing fields.
+function normalizeList(list) {
+  return {
+    request: list.request_summary || '',
+    points: (list.points || []).map((p, i) => ({
+      id: String(p.id || `p${i}`), title: p.title || '', desc: p.desc || '',
+      needs: p.needs || [], done: false, ai: false
+    })),
+    outside: (list.outside || []).map((o, i) => ({ id: String(o.id || `o${i}`), text: o.text || '', done: false })),
+    steps: list.steps || [],
+    sources: list.sources || []
+  }
 }
 
 const STEPS_LIST = ['A ler o email', 'A perceber o pedido', 'A procurar a informação nas fontes a que tenho acesso']
 const STEPS_GENERATE = ['A juntar a lista e a informação que me deu', 'A escrever os pontos por marcar']
 const STEPS_REGENERATE = ['A escrever outra versão']
 const STEP_DELAY_MS = 650
+
+// Short plain messages for failures (HANDOFF.md open issue 8).
+function errorMessage(err) {
+  if (err && err.message === 'No thread text') return 'Não consegui ler o email desta conversa.'
+  if (!navigator.onLine) return 'Sem ligação à internet.'
+  return 'Não foi possível contactar o assistente.'
+}
 
 // --- Preferences ------------------------------------------------------------
 // The only settings the spec allows: the first-use guide and "Preparar sempre".
@@ -126,7 +183,7 @@ button{font-family:inherit;cursor:pointer}
 .chip-row{display:flex;justify-content:flex-end}
 .chip{display:inline-flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;padding:0 16px;min-height:40px;border-radius:20px;border:1px solid var(--green-200);background:var(--green-50);color:var(--green-700)}
 
-.panel{display:flex;flex-direction:column;background:#fff;border:1px solid var(--panel-border);border-radius:14px;overflow:hidden;height:560px}
+.panel{display:flex;flex-direction:column;background:#fff;border:1px solid var(--panel-border);border-radius:14px;overflow:hidden;height:var(--panel-height,560px)}
 .panel.top{height:auto;max-height:520px}
 .panel-head{display:flex;align-items:center;gap:6px;padding:12px 16px;border-bottom:1px solid var(--panel-line)}
 .panel-head strong{flex:1 1 auto;font-size:15px;color:var(--green-900)}
@@ -189,7 +246,9 @@ button{font-family:inherit;cursor:pointer}
 // Page-level styles: the font, and the anchor for our host element.
 const PANEL_WIDTH = 400
 const PANEL_HEIGHT = 560
+const PANEL_MIN_HEIGHT = 320
 const PANEL_GAP = 16
+const TOOLBAR_FALLBACK = 64 // if Gmail's formatting toolbar can't be found
 const NARROW_BELOW = 820 // reply body narrower than this: panel goes above the text
 
 function injectPageStyles() {
@@ -264,15 +323,17 @@ function createAssistant(replyBox) {
   const basePadTop = parseFloat(base.paddingTop) || 0
   const basePadRight = parseFloat(base.paddingRight) || 0
   const baseMinHeight = replyBox.style.minHeight
+  const baseParentPadRight = parseFloat(getComputedStyle(parent).paddingRight) || 0
 
-  const freshPoints = () => EXAMPLE_LIST.points.map((p) => ({ ...p, done: false, ai: false }))
   let S = {
     view: 'ready', // 'ready' | 'declined' | 'working' | 'list'
-    points: freshPoints(), values: {}, outsideDone: false,
+    request: '', points: [], outside: [], steps: [], sources: [], values: {},
     editing: false, snapshot: null, newText: '',
-    stepTexts: [], stepIdx: 0, stepsOpen: false, hadList: false
+    stepTexts: [], stepIdx: 0, stepsOpen: false, hadList: false,
+    error: null, retry: null
   }
   let timer = null
+  let workToken = 0 // bumped on cancel, so a late response is ignored
   let narrow = false
 
   function set(patch) {
@@ -282,12 +343,27 @@ function createAssistant(replyBox) {
 
   const has = (key) => !!(S.values[key] || '').trim()
 
-  function runSteps(texts, after) {
+  // Shows the progress steps one at a time while `work` runs. The last step
+  // stays in progress until the work settles; then `after(result)` is applied,
+  // or an error with "Tentar outra vez" (which reruns the action `retry`).
+  function runWork(texts, work, after, retry) {
     clearTimeout(timer)
-    set({ view: 'working', stepTexts: texts, stepIdx: 0, editing: false })
+    const token = ++workToken
+    set({ view: 'working', stepTexts: texts, stepIdx: 0, editing: false, error: null, retry })
+    let settled = false
+    let animated = false
+    let result
+    let failure = null
+    const finish = () => {
+      if (token !== workToken || !settled || !animated) return
+      if (failure) set({ error: failure })
+      else set(after(result))
+    }
+    work.then((r) => { result = r }, (e) => { failure = e })
+      .finally(() => { settled = true; finish() })
     const tick = (i) => {
       timer = setTimeout(() => {
-        if (i >= texts.length) { set(after); return }
+        if (i >= texts.length) { animated = true; finish(); return }
         set({ stepIdx: i })
         tick(i + 1)
       }, STEP_DELAY_MS)
@@ -295,36 +371,68 @@ function createAssistant(replyBox) {
     tick(1)
   }
 
+  function stopWork() {
+    clearTimeout(timer)
+    workToken++
+  }
+
   function currentMode() {
     const panelOpen = S.view === 'working' || S.view === 'list'
     return panelOpen && !narrow ? 'side' : 'top'
   }
 
-  // The host floats over the reply body, anchored to the editable box itself,
-  // and the editable gets padding so the person's text starts clear of it:
-  // above the text for the bar, chip and narrow panel, beside it for the side
-  // panel. Only the editable's inline style changes, never its content, so
-  // none of this is sent with the email.
+  // The host floats over the reply body and space is made for it so the
+  // person's text starts clear of it. Above the text (bar, chip, narrow panel)
+  // the editable gets padding-top. Beside the text (side panel) the space goes
+  // on the editable's *parent* instead: Gmail sizes the editable at 100% of
+  // its parent, so padding on the editable itself makes it overflow and get
+  // clipped by an outer overflow:hidden container. Only inline styles change,
+  // never the editable's content, so none of this is sent with the email.
   function layout() {
     if (!replyBox.isConnected) return
     const mode = currentMode()
-    const top = replyBox.offsetTop
-    const left = replyBox.offsetLeft
-    const width = replyBox.offsetWidth
-    host.style.top = `${top}px`
+    host.style.top = `${replyBox.offsetTop}px`
     if (mode === 'side') {
-      host.style.left = `${left + width - PANEL_WIDTH - basePadRight}px`
+      const height = sidePanelHeight()
+      host.style.left = 'auto'
+      host.style.right = `${baseParentPadRight}px`
       host.style.width = `${PANEL_WIDTH}px`
+      host.style.setProperty('--panel-height', `${height}px`)
+      parent.style.setProperty('padding-right', `${baseParentPadRight + PANEL_WIDTH + PANEL_GAP}px`, 'important')
+      replyBox.style.setProperty('padding-top', `${basePadTop}px`, 'important')
+      replyBox.style.setProperty('min-height', `${height}px`, 'important')
     } else {
-      host.style.left = `${left}px`
-      host.style.width = `${width - basePadRight}px`
+      parent.style.setProperty('padding-right', `${baseParentPadRight}px`, 'important')
+      host.style.left = `${replyBox.offsetLeft}px`
+      host.style.right = 'auto'
+      host.style.width = `${replyBox.offsetWidth - basePadRight}px`
+      replyBox.style.setProperty('padding-top', `${basePadTop + host.offsetHeight + 8}px`, 'important')
+      replyBox.style.minHeight = baseMinHeight
     }
-    const spaceAbove = mode === 'side' ? 0 : host.offsetHeight + 8
-    const spaceRight = mode === 'side' ? PANEL_WIDTH + PANEL_GAP : 0
-    replyBox.style.setProperty('padding-top', `${basePadTop + spaceAbove}px`, 'important')
-    replyBox.style.setProperty('padding-right', `${basePadRight + spaceRight}px`, 'important')
-    if (mode === 'side') replyBox.style.setProperty('min-height', `${PANEL_HEIGHT}px`, 'important')
-    else replyBox.style.minHeight = baseMinHeight
+  }
+
+  // Gmail's reply body is a scroll area with the formatting toolbar floating
+  // over its bottom edge. Fit the side panel between the top of the editable
+  // and that toolbar, so its footer buttons are never hidden underneath.
+  const scroller = (() => {
+    for (let n = parent.parentElement; n; n = n.parentElement) {
+      if (/(auto|scroll)/.test(getComputedStyle(n).overflowY)) return n
+    }
+    return null
+  })()
+
+  function sidePanelHeight() {
+    if (!scroller) return PANEL_HEIGHT
+    const box = scroller.getBoundingClientRect()
+    // Top of the editable in the scroller's content coordinates, so the
+    // result doesn't change as the reply body scrolls.
+    const top = replyBox.getBoundingClientRect().top - box.top + scroller.scrollTop
+    const toolbar = [...scroller.querySelectorAll('[role="toolbar"]')]
+      .map((t) => t.getBoundingClientRect())
+      .find((r) => r.height > 0 && r.top < box.bottom && r.bottom > box.top)
+    const covered = toolbar ? box.bottom - toolbar.top : TOOLBAR_FALLBACK
+    const available = scroller.clientHeight - top - covered - PANEL_GAP
+    return Math.max(PANEL_MIN_HEIGHT, Math.min(PANEL_HEIGHT, Math.round(available)))
   }
 
   function render() {
@@ -364,6 +472,11 @@ function createAssistant(replyBox) {
     let h = `<aside class="panel ${mode === 'top' ? 'top' : ''}" aria-label="Assistente DALM"><div class="panel-head"><span class="badge sm">${SPARK(13)}</span><strong>Assistente DALM</strong>
       <button class="link" data-a="openHelp">Como funciona</button><button class="link muted" data-a="hide">Esconder</button></div>`
 
+    if (S.view === 'working' && S.error) {
+      return h + `<div class="steps"><span class="message warn" role="alert">${esc(errorMessage(S.error))}</span>
+        <div class="row"><button class="btn-primary" data-a="retry">Tentar outra vez</button><button class="btn-quiet" data-a="cancel">Cancelar</button></div></div></aside>`
+    }
+
     if (S.view === 'working') {
       return h + `<div class="steps">` + S.stepTexts.map((t, i) => `<div class="step ${i > S.stepIdx ? 'pending' : ''}">${i < S.stepIdx ? TICK(18, '#2F8A63', 2.6) : '<span class="step-dots" aria-hidden="true">…</span>'}<span>${esc(t)}</span></div>`).join('') +
         `<div><button class="btn-secondary" data-a="cancel">Cancelar</button></div></div></aside>`
@@ -381,14 +494,17 @@ function createAssistant(replyBox) {
     const toWrite = S.points.filter((p) => !p.done && !p.ai)
     const doneCount = S.points.filter((p) => p.done).length
     const totalNeeds = S.points.reduce((n, p) => n + p.needs.length, 0)
+    const stepItems = S.steps.map((s) => `<li>${esc(s)}</li>`)
+    if (totalNeeds) stepItems.push(`<li>${totalNeeds === 1 ? 'Não encontrei 1 informação (marcada abaixo)' : `Não encontrei ${totalNeeds} informações (marcadas abaixo)`}</li>`)
+    if (S.sources.length) stepItems.push(`<li>Fontes: ${S.sources.map(esc).join('; ')}</li>`)
 
     h += `<div class="panel-body">
       <div style="display:flex;flex-direction:column;gap:6px">
         <div class="summary">${TICK(15, '#5F8F7C', 2.6)}<span>${anyAI ? 'Escrevi os pontos que estavam por marcar' : 'Li o email e preparei esta lista'}</span>
         <button class="link" aria-expanded="${S.stepsOpen}" data-a="toggleSteps">${S.stepsOpen ? 'Esconder passos' : 'Ver passos'}</button></div>
-        ${S.stepsOpen ? `<ul class="steplist"><li>Li o email</li><li>Percebi o pedido</li><li>Procurei a informação nas fontes a que tenho acesso</li><li>Não encontrei ${totalNeeds} informações (marcadas abaixo)</li></ul>` : ''}
+        ${S.stepsOpen ? `<ul class="steplist">${stepItems.join('')}</ul>` : ''}
       </div>
-      <p class="request"><strong>O pedido:</strong> ${esc(EXAMPLE_LIST.request)}</p>
+      <p class="request"><strong>O pedido:</strong> ${esc(S.request)}</p>
       <div class="section">
         <div class="section-head"><strong>A resposta deve tratar:</strong><span>${doneCount} de ${S.points.length} tratados</span></div>
         <span class="hint">${anyAI ? 'Marque cada ponto quando estiver satisfeito com o texto.' : 'Marque os pontos que já tratou. O assistente só escreve os que ficarem por marcar.'}</span>
@@ -407,17 +523,18 @@ function createAssistant(replyBox) {
             ${showFields ? p.needs.map((n) => `<div class="field"><label for="need-${n.key}">${esc(n.label)}</label><input id="need-${n.key}" class="${has(n.key) ? 'filled' : ''}" placeholder="não encontrei" value="${esc(S.values[n.key] || '')}" data-key="${n.key}"></div>`).join('') : ''}
             </div></li>`
         }).join('') + `</ul></div>
-      <div style="display:flex;flex-direction:column;gap:6px"><strong style="font-size:14px">Fora do email, faz você:</strong>
-        <div class="outside"><button class="check" role="checkbox" aria-checked="${S.outsideDone}" aria-label="Marcar como feito: ${esc(EXAMPLE_LIST.outside)}" data-a="toggleOutside">${S.outsideDone ? TICK(14, 'currentColor', 3) : ''}</button><span class="${S.outsideDone ? 'done' : ''}">${esc(EXAMPLE_LIST.outside)}</span></div>
-      </div></div>`
+      ${S.outside.length ? `<div style="display:flex;flex-direction:column;gap:6px"><strong style="font-size:14px">Fora do email, faz você:</strong>
+        ${S.outside.map((o) => `<div class="outside"><button class="check" role="checkbox" aria-checked="${o.done}" aria-label="Marcar como feito: ${esc(o.text)}" data-a="toggleOutside" data-id="${o.id}">${o.done ? TICK(14, 'currentColor', 3) : ''}</button><span class="${o.done ? 'done' : ''}">${esc(o.text)}</span></div>`).join('')}
+      </div>` : ''}</div>`
 
     const missingInText = S.points.filter((p) => p.ai).reduce((n, p) => n + p.needs.filter((x) => !has(x.key)).length, 0)
     const unreviewed = S.points.filter((p) => p.ai && !p.done).length
+    const outsideDone = S.outside.every((o) => o.done)
     let msg = ''
     let warn = false
     if (missingInText > 0) { msg = missingInText === 1 ? 'Falta 1 informação, a amarelo no texto.' : `Faltam ${missingInText} informações, a amarelo no texto.`; warn = true }
     else if (unreviewed > 0) msg = 'Leia o texto do assistente e marque cada ponto.'
-    else if (doneCount === S.points.length && S.points.length) msg = S.outsideDone ? 'Tudo tratado. Envie quando quiser.' : 'Resposta tratada. Falta a tarefa fora do email.'
+    else if (doneCount === S.points.length && S.points.length) msg = outsideDone ? 'Tudo tratado. Envie quando quiser.' : 'Resposta tratada. Falta a tarefa fora do email.'
 
     h += `<div class="panel-foot">${msg ? `<span class="message ${warn ? 'warn' : ''}">${msg}</span>` : ''}<div class="row">
       ${toWrite.length ? `<button class="btn-primary" data-a="generate">${SPARK(15)} ${toWrite.length === S.points.length ? 'Gerar resposta' : `Gerar o que falta (${toWrite.length})`}</button>` : ''}
@@ -426,23 +543,27 @@ function createAssistant(replyBox) {
     return h
   }
 
-  // Generating only flags points in the panel for now; inserting the text
-  // into the email is build step 5.
+  // Generating only flags points in the panel for now; calling /generate and
+  // inserting the text into the email is build step 5.
   const actions = {
-    askList: () => runSteps(STEPS_LIST, { view: 'list', hadList: true, points: freshPoints(), values: {} }),
+    // Explicit click (or the opt-in "Preparar sempre"): the only point where
+    // the thread is read and sent.
+    askList: () => runWork(STEPS_LIST, requestList(replyBox),
+      (list) => ({ view: 'list', hadList: true, ...normalizeList(list), values: {}, stepsOpen: false }), 'askList'),
     decline: () => set({ view: 'declined' }),
     reopen: () => set({ view: S.hadList ? 'list' : 'ready' }),
-    hide: () => { clearTimeout(timer); set({ view: 'declined', hadList: S.hadList || S.view === 'list' }) },
-    cancel: () => { clearTimeout(timer); set({ view: S.hadList ? 'list' : 'ready' }) },
+    hide: () => { stopWork(); set({ view: 'declined' }) },
+    cancel: () => { stopWork(); set({ view: S.hadList ? 'list' : 'ready', error: null }) },
+    retry: () => S.retry && actions[S.retry](),
     openHelp: () => showGuide(),
     toggleSteps: () => set({ stepsOpen: !S.stepsOpen }),
     toggle: (el) => set({ points: S.points.map((p) => p.id === el.dataset.id ? { ...p, done: !p.done } : p) }),
-    toggleOutside: () => set({ outsideDone: !S.outsideDone }),
+    toggleOutside: (el) => set({ outside: S.outside.map((o) => o.id === el.dataset.id ? { ...o, done: !o.done } : o) }),
     generate: () => {
       const ids = S.points.filter((p) => !p.done && !p.ai).map((p) => p.id)
-      runSteps(STEPS_GENERATE, (s) => ({ view: 'list', points: s.points.map((p) => ids.includes(p.id) ? { ...p, ai: true } : p) }))
+      runWork(STEPS_GENERATE, Promise.resolve(), () => ({ view: 'list', points: S.points.map((p) => ids.includes(p.id) ? { ...p, ai: true } : p) }), 'generate')
     },
-    regenerate: () => runSteps(STEPS_REGENERATE, { view: 'list' }),
+    regenerate: () => runWork(STEPS_REGENERATE, Promise.resolve(), () => ({ view: 'list' }), 'regenerate'),
     removeAI: () => set({ points: S.points.map((p) => p.ai ? { ...p, ai: false, done: false } : p) }),
     startEdit: () => set({ editing: true, snapshot: S.points }),
     finishEdit: () => set({ editing: false }),
@@ -487,12 +608,16 @@ function createAssistant(replyBox) {
 
   // Re-anchor when the reply box or our own content changes size, and put the
   // panel above the text when the reply body is too narrow for a column.
+  // The parent's clientWidth includes its padding, so it doesn't change when
+  // the side panel adds padding-right, and the layout can't flip-flop.
   const resizeObserver = new ResizeObserver(() => {
-    const isNarrow = replyBox.offsetWidth < NARROW_BELOW
+    const isNarrow = parent.clientWidth < NARROW_BELOW
     if (isNarrow !== narrow) { narrow = isNarrow; render() } else layout()
   })
+  resizeObserver.observe(parent)
   resizeObserver.observe(replyBox)
   resizeObserver.observe(host)
+  if (scroller) resizeObserver.observe(scroller)
 
   // Gmail removes the reply box when it's closed or sent; poll for that since
   // there's no reliable event for it.
@@ -504,7 +629,7 @@ function createAssistant(replyBox) {
     host.remove()
   }, 1000)
 
-  narrow = replyBox.offsetWidth < NARROW_BELOW
+  narrow = parent.clientWidth < NARROW_BELOW
   render()
   if (!prefs.guideSeen) showGuide()
   if (prefs.prepareAlways) actions.askList()
