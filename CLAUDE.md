@@ -22,13 +22,17 @@ Runs directly inside the Gmail page (`mail.google.com`). It is **plain JavaScrip
 
 Core flow:
 - A `MutationObserver` watches the Gmail DOM for compose boxes (`div[role="textbox"][aria-label]`).
-- `attachToComposeBox` injects a **"Draft reply" button** into each new compose box (guarded by `dataset.mailRecommenderAttached` to avoid double-attaching). The backend (`agent/server.py` + `DALMRecommender`) runs a multi-step LLM + retrieval pipeline that takes several seconds and only replies in European Portuguese, so this is an explicit, on-demand action rather than a live-as-you-type suggestion.
+- `findThreadView` limits attaching to inline replies inside an open thread (`[role="main"]` containing `.a3s` message bodies); new messages from "Compor" are ignored. `readThread` reads the expanded messages (sender, date, body text) plus the thread ID, and must only be called after an explicit click (see the rules in `docs/handoff/HANDOFF.md`).
+- `attachToComposeBox` injects a **"Draft reply" button** into each reply box (guarded by `dataset.mailRecommenderAttached` to avoid double-attaching). The backend (`agent/server.py` + `DALMRecommender`) runs a multi-step LLM + retrieval pipeline that takes several seconds and only replies in European Portuguese, so this is an explicit, on-demand action rather than a live-as-you-type suggestion.
 - Clicking the button POSTs `{ email: text }` to `RECOMMEND_ENDPOINT` (`http://localhost:4000/recommend`) and expects `{ in_scope: bool, reply: string, ... }` back.
 - If `in_scope` is true, the compose box content is replaced with `reply`, then a synthetic `input` event is dispatched so Gmail registers the change. If not in scope (or the request fails), a dismissible notice tooltip (`#mail-recommender-notice`) is shown near the button instead. **Esc** dismisses the notice.
 
 To change the backend URL, update `RECOMMEND_ENDPOINT` at the top of `public/content.js`.
 
 To test the UI without the backend, set `MOCK_MODE = true` at the top of `public/content.js` and rebuild. Responses are canned and chosen by keywords in the draft: `!out` (out of scope), `!error` (backend failure), `!long` (multi-paragraph reply); anything else returns a short reply echoing the input.
+
+### Interface redesign (in progress)
+`docs/handoff/` holds the spec (`HANDOFF.md`) and clickable prototype for the "Assistente DALM" redesign that will replace the Draft reply button. Work follows the build order in section 11, one step at a time, using our own DOM injection (not InboxSDK or the Side Panel). The backend endpoints it describes (`/list`, `/generate`, `/config`, `/log`) don't exist yet and are mocked first.
 
 ### 2. React popup (`src/`)
 Compiled by CRA into `build/static/`. Mounted by `build/index.html`, shown when the user clicks the extension icon. Currently a static informational UI. Extend `src/App.js` for settings, status, or configuration controls.

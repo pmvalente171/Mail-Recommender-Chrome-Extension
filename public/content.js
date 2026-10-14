@@ -130,19 +130,63 @@ async function fetchRecommendation(text) {
   return res.json()
 }
 
-function extractOriginalEmail(composeBox) {
-  // Gmail embeds the original message as a hidden blockquote inside the
-  // reply compose box (behind the "Show trimmed content" "..." toggle).
-  // textContent reads it regardless of its collapsed/hidden state, unlike innerText.
-  const quote = composeBox.querySelector('blockquote.gmail_quote, blockquote[class*="quote"], div.gmail_quote')
-  if (quote && quote.textContent.trim()) return quote.textContent.trim()
+// --- Gmail thread and reply box ---------------------------------------------
+// Gmail class names (.a3s message body, .gD sender, .g3 date, h2.hP subject)
+// are obfuscated but have been stable for years. If Gmail changes them, these
+// are the selectors to update.
 
-  // Fallback: the rendered message body of the thread being replied to.
-  const thread = composeBox.closest('[role="main"]') || document
-  const bodies = thread.querySelectorAll('.a3s.aiL')
-  if (bodies.length) return bodies[bodies.length - 1].textContent.trim()
+// The open conversation that contains this reply box, or null if the box is
+// not an inline reply in a thread (e.g. a new message from "Compor").
+function findThreadView(replyBox) {
+  const main = replyBox.closest('[role="main"]')
+  if (!main) return null
+  const hasMessages = [...main.querySelectorAll('.a3s')].some((body) => !replyBox.contains(body))
+  return hasMessages ? main : null
+}
 
-  return ''
+function getThreadId(threadView) {
+  const subject = threadView.querySelector('h2[data-thread-perm-id], h2[data-legacy-thread-id]')
+  if (subject) return subject.dataset.threadPermId || subject.dataset.legacyThreadId
+  // Fallback: the last segment of the URL, e.g. #label/DALM+Examples/KtbxLz…
+  return location.hash.split('/').pop() || ''
+}
+
+// Reads the text of the open thread. Only call this after an explicit click:
+// nothing in the email is read until the person asks for it.
+// Only expanded messages are read; Gmail does not render the bodies of
+// collapsed messages, so earlier messages hidden behind a count are skipped.
+function readThread(replyBox) {
+  const threadView = findThreadView(replyBox)
+  if (!threadView) return null
+
+  const subjectEl = threadView.querySelector('h2.hP')
+  const messages = [...threadView.querySelectorAll('.a3s')]
+    .filter((body) => !replyBox.contains(body))
+    .map((body) => {
+      const container = body.closest('.adn') || body.parentElement
+      const sender = container.querySelector('.gD')
+      const date = container.querySelector('.g3')
+      return {
+        from: sender ? sender.getAttribute('name') || sender.textContent.trim() : '',
+        email: sender ? sender.getAttribute('email') || '' : '',
+        date: date ? date.getAttribute('title') || date.textContent.trim() : '',
+        // innerText keeps line breaks and skips Gmail's hidden "..." trimmed
+        // quote, which only repeats earlier messages.
+        text: body.innerText.trim()
+      }
+    })
+    .filter((message) => message.text)
+
+  const text = messages
+    .map((m) => `De: ${m.from}${m.email ? ` <${m.email}>` : ''}\nData: ${m.date}\n\n${m.text}`)
+    .join('\n\n---\n\n')
+
+  return {
+    threadId: getThreadId(threadView),
+    subject: subjectEl ? subjectEl.textContent.trim() : '',
+    messages,
+    text
+  }
 }
 
 function escapeHtml(text) {
@@ -198,7 +242,8 @@ function createDraftButton(composeBox) {
     hideNotice()
 
     const draft = (composeBox.innerText || composeBox.textContent || '').trim()
-    const original = extractOriginalEmail(composeBox)
+    const thread = readThread(composeBox)
+    const original = thread ? thread.text : ''
     const text = original ? (draft ? `${original}\n\n${draft}` : original) : draft
     if (!text) {
       showNotice('Write something, or open an email to reply to, first.')
@@ -237,6 +282,9 @@ function createDraftButton(composeBox) {
 
 function attachToComposeBox(composeBox) {
   if (composeBox.dataset.mailRecommenderAttached) return
+  // The assistant lives only in inline replies to an open thread.
+  const threadView = findThreadView(composeBox)
+  if (!threadView) return
   composeBox.dataset.mailRecommenderAttached = 'true'
 
   const button = createDraftButton(composeBox)
