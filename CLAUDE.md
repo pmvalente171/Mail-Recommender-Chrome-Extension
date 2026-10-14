@@ -20,19 +20,17 @@ This is a Manifest V3 Chrome extension with two independent runtime contexts:
 ### 1. Content script (`public/content.js`)
 Runs directly inside the Gmail page (`mail.google.com`). It is **plain JavaScript — no React, no build step**. The file in `public/` is copied verbatim into `build/` by CRA.
 
+It implements the "Assistente DALM" described in `docs/handoff/HANDOFF.md` (spec, wins over the prototype) and `docs/handoff/prototype.html` (look and behaviour). Work follows the spec's build order (section 11) one step at a time; read the spec's non-negotiable rules (section 2) before changing behaviour.
+
 Core flow:
-- A `MutationObserver` watches the Gmail DOM for compose boxes (`div[role="textbox"][aria-label]`).
-- `findThreadView` limits attaching to inline replies inside an open thread (`[role="main"]` containing `.a3s` message bodies); new messages from "Compor" are ignored. `readThread` reads the expanded messages (sender, date, body text) plus the thread ID, and must only be called after an explicit click (see the rules in `docs/handoff/HANDOFF.md`).
-- `attachToComposeBox` injects a **"Draft reply" button** into each reply box (guarded by `dataset.mailRecommenderAttached` to avoid double-attaching). The backend (`agent/server.py` + `DALMRecommender`) runs a multi-step LLM + retrieval pipeline that takes several seconds and only replies in European Portuguese, so this is an explicit, on-demand action rather than a live-as-you-type suggestion.
-- Clicking the button POSTs `{ email: text }` to `RECOMMEND_ENDPOINT` (`http://localhost:4000/recommend`) and expects `{ in_scope: bool, reply: string, ... }` back.
-- If `in_scope` is true, the compose box content is replaced with `reply`, then a synthetic `input` event is dispatched so Gmail registers the change. If not in scope (or the request fails), a dismissible notice tooltip (`#mail-recommender-notice`) is shown near the button instead. **Esc** dismisses the notice.
+- A `MutationObserver` watches the Gmail DOM for editable boxes (`div[role="textbox"][aria-label]`).
+- `findThreadView` limits attaching to inline replies inside an open thread (`[role="main"]` containing `.a3s` message bodies); new messages from "Compor" are ignored. `readThread` reads the expanded messages (sender, date, body text) plus the thread ID, and must only be called after an explicit click.
+- `createAssistant` inserts a host element **before** the reply's editable body (never inside it: anything inside becomes part of the email) and renders the UI into its shadow root from a state object, like the prototype: ready bar → "Mostrar assistente" chip, or progress steps → the list panel. The content is still the prototype's static `EXAMPLE_LIST`.
+- Layout is driven by `data-dalm-*` attributes and a page stylesheet (`injectPageStyles`): in `side` mode the panel is absolutely positioned on the right and the editable gets `padding-right` + `min-height`; when the reply body is narrower than `NARROW_BELOW` the panel goes above the text (`top` mode). Only attributes on Gmail's elements are touched, never their content.
+- `isolateEvents` stops key and click events at the shadow host, because Gmail's keyboard shortcuts would otherwise fire while typing in the panel.
+- Preferences (`guideSeen`, `prepareAlways`) are kept in `chrome.storage.sync`. Public Sans is bundled in `public/fonts/` (OFL) and exposed through `web_accessible_resources`.
 
-To change the backend URL, update `RECOMMEND_ENDPOINT` at the top of `public/content.js`.
-
-To test the UI without the backend, set `MOCK_MODE = true` at the top of `public/content.js` and rebuild. Responses are canned and chosen by keywords in the draft: `!out` (out of scope), `!error` (backend failure), `!long` (multi-paragraph reply); anything else returns a short reply echoing the input.
-
-### Interface redesign (in progress)
-`docs/handoff/` holds the spec (`HANDOFF.md`) and clickable prototype for the "Assistente DALM" redesign that will replace the Draft reply button. Work follows the build order in section 11, one step at a time, using our own DOM injection (not InboxSDK or the Side Panel). The backend endpoints it describes (`/list`, `/generate`, `/config`, `/log`) don't exist yet and are mocked first.
+Not built yet (later steps): reading the thread and calling the backend (`/list`, `/generate`, `/config`, `/log`, mocked first, via the service worker), personal-data redaction, inserting text into the email, per-thread state, study logging.
 
 ### 2. React popup (`src/`)
 Compiled by CRA into `build/static/`. Mounted by `build/index.html`, shown when the user clicks the extension icon. Currently a static informational UI. Extend `src/App.js` for settings, status, or configuration controls.

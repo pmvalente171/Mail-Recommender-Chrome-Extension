@@ -1,134 +1,7 @@
-// Content script: detects Gmail compose boxes and offers a "Draft reply" action
-// that calls the DALM backend to generate a full Portuguese registrar reply.
-
-const RECOMMEND_ENDPOINT = "http://localhost:4000/recommend"
-
-// Mock mode: skip the backend and return canned responses, for testing the UI.
-// Put a keyword in the draft to pick the outcome: !out (out of scope),
-// !error (backend failure), !long (multi-paragraph reply). Anything else
-// gets a short reply that echoes the start of the text that would be sent.
-const MOCK_MODE = false
-const MOCK_DELAY_MS = 2000
-
-function injectSpinnerStyle() {
-  if (document.getElementById('mail-recommender-style')) return
-  const style = document.createElement('style')
-  style.id = 'mail-recommender-style'
-  style.textContent = `
-    @keyframes mail-recommender-spin { to { transform: rotate(360deg); } }
-    .mail-recommender-spinner {
-      display: inline-block;
-      width: 10px;
-      height: 10px;
-      margin-right: 6px;
-      border: 2px solid #aecbfa;
-      border-top-color: #1a73e8;
-      border-radius: 50%;
-      animation: mail-recommender-spin 0.6s linear infinite;
-      vertical-align: middle;
-    }
-  `
-  document.head.appendChild(style)
-}
-
-let lastMouseX = 0
-let lastMouseY = 0
-document.addEventListener('mousemove', (e) => {
-  lastMouseX = e.clientX
-  lastMouseY = e.clientY
-  const tooltip = document.getElementById('mail-recommender-notice')
-  if (tooltip && tooltip.style.display === 'block') {
-    positionNoticeAtCursor(tooltip)
-  }
-})
-
-function positionNoticeAtCursor(tooltip) {
-  const offset = 16
-  const rect = tooltip.getBoundingClientRect()
-  let left = lastMouseX + offset
-  let top = lastMouseY + offset
-  if (left + rect.width > window.innerWidth) left = lastMouseX - rect.width - offset
-  if (top + rect.height > window.innerHeight) top = lastMouseY - rect.height - offset
-  tooltip.style.left = `${Math.max(left, 0)}px`
-  tooltip.style.top = `${Math.max(top, 0)}px`
-}
-
-function getNoticeTooltip() {
-  let tooltip = document.getElementById('mail-recommender-notice')
-  if (!tooltip) {
-    tooltip = document.createElement('div')
-    tooltip.id = 'mail-recommender-notice'
-    tooltip.style.cssText = `
-      position: fixed;
-      background: white;
-      border: 1px solid #dadce0;
-      border-radius: 4px;
-      padding: 8px 12px;
-      font-size: 13px;
-      color: #3c4043;
-      max-width: 280px;
-      z-index: 99999;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.15);
-      display: none;
-      pointer-events: none;
-    `
-    document.body.appendChild(tooltip)
-  }
-  return tooltip
-}
-
-function showNotice(text) {
-  const tooltip = getNoticeTooltip()
-  tooltip.textContent = text
-  tooltip.style.display = 'block'
-  positionNoticeAtCursor(tooltip)
-}
-
-function hideNotice() {
-  const tooltip = document.getElementById('mail-recommender-notice')
-  if (tooltip) tooltip.style.display = 'none'
-}
-
-async function mockRecommendation(text) {
-  await new Promise((resolve) => setTimeout(resolve, MOCK_DELAY_MS))
-
-  if (text.includes('!error')) throw new Error('Mock backend failure')
-  if (text.includes('!out')) return { in_scope: false, reply: '' }
-  if (text.includes('!long')) {
-    return {
-      in_scope: true,
-      reply: [
-        'Caro(a) estudante,',
-        '',
-        'Agradecemos o seu contacto. [MOCK] Este é um parágrafo de teste para verificar a formatação de respostas longas.',
-        '',
-        'Segundo parágrafo de teste, com uma linha imediatamente a seguir.',
-        'Terceira linha, sem linha em branco antes.',
-        '',
-        'Com os melhores cumprimentos,',
-        'Divisão Académica'
-      ].join('\n')
-    }
-  }
-
-  const preview = text.replace(/\s+/g, ' ').slice(0, 120)
-  return {
-    in_scope: true,
-    reply: `Caro(a) estudante,\n\n[MOCK] Resposta de teste. Texto recebido: "${preview}"\n\nCom os melhores cumprimentos,\nDivisão Académica`
-  }
-}
-
-async function fetchRecommendation(text) {
-  if (MOCK_MODE) return mockRecommendation(text)
-
-  const res = await fetch(RECOMMEND_ENDPOINT, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: text })
-  })
-  if (!res.ok) throw new Error(`Backend returned ${res.status}`)
-  return res.json()
-}
+// Content script: adds the "Assistente DALM" to Gmail's inline reply box.
+// The spec and the clickable prototype are in docs/handoff/. Everything the
+// assistant draws lives in a shadow root *outside* the reply's editable body,
+// so nothing it renders can become part of the email.
 
 // --- Gmail thread and reply box ---------------------------------------------
 // Gmail class names (.a3s message body, .gD sender, .g3 date, h2.hP subject)
@@ -189,146 +62,468 @@ function readThread(replyBox) {
   }
 }
 
-function escapeHtml(text) {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+// --- Example content --------------------------------------------------------
+// Static list from docs/handoff/prototype.html. It stands in for the POST /list
+// response until that is mocked with the real thread (build step 3).
+const EXAMPLE_LIST = {
+  request: 'um encarregado de educação quer saber se a Licenciatura em Análise e Engenharia de Dados abre vagas em 2026/27 e quais as condições de acesso.',
+  points: [
+    { id: 'c2', title: 'Vagas', desc: 'dizer quantas vagas há no concurso de 2026/27.', needs: [{ key: 'vagas', label: 'N.º de vagas' }] },
+    { id: 'c3', title: 'Condições de acesso', desc: 'indicar as provas de ingresso e a nota mínima.', needs: [{ key: 'provas', label: 'Provas de ingresso' }, { key: 'nota', label: 'Nota mínima' }] },
+    { id: 'c4', title: 'Candidatura', desc: 'explicar onde e quando se candidata.', needs: [{ key: 'datas', label: 'Datas da 1.ª fase' }] },
+    { id: 'c5', title: 'Site', desc: 'lamentar que a informação ainda não esteja no nosso site.', needs: [] }
+  ],
+  outside: 'Pedir à equipa do site que publique a página do curso.'
 }
 
-function replaceComposeBoxText(composeBox, text) {
-  composeBox.focus()
-  // Plain '\n' characters don't create line breaks in a contenteditable div;
-  // each line needs to be its own block element, matching Gmail's own markup.
-  composeBox.innerHTML = escapeHtml(text)
-    .split('\n')
-    .map((line) => `<div>${line || '<br>'}</div>`)
-    .join('')
-  composeBox.dispatchEvent(new Event('input', { bubbles: true }))
+const STEPS_LIST = ['A ler o email', 'A perceber o pedido', 'A procurar a informação nas fontes a que tenho acesso']
+const STEPS_GENERATE = ['A juntar a lista e a informação que me deu', 'A escrever os pontos por marcar']
+const STEPS_REGENERATE = ['A escrever outra versão']
+const STEP_DELAY_MS = 650
+
+// --- Preferences ------------------------------------------------------------
+// The only settings the spec allows: the first-use guide and "Preparar sempre".
+const prefs = { guideSeen: true, prepareAlways: false }
+const prefsReady = chrome.storage.sync.get({ guideSeen: false, prepareAlways: false })
+  .then((stored) => Object.assign(prefs, stored))
+  .catch(() => {})
+
+function savePref(key, value) {
+  prefs[key] = value
+  chrome.storage.sync.set({ [key]: value }).catch(() => {})
 }
 
-function positionOverComposeBox(element, composeBox) {
-  const rect = composeBox.getBoundingClientRect()
-  // Anchor from the right edge (not left) so the button growing wider while
-  // loading ("Draft reply" -> spinner + "Drafting reply...") expands inward
-  // instead of overflowing past the compose box's right border.
-  element.style.top = `${rect.top + 6}px`
-  element.style.right = `${window.innerWidth - rect.right + 6}px`
-  element.style.left = 'auto'
-}
+// --- Styles -----------------------------------------------------------------
+// Tokens and component styles ported from docs/handoff/prototype.html.
+const UI_CSS = `
+:host{all:initial;
+  --green-900:#173F33; --green-700:#1F5C4A; --green-600:#2F8A63; --green-300:#8FB3A3;
+  --green-200:#A9C9BB; --green-100:#EAF3EF; --green-50:#F2F7F4; --panel-line:#E3EBE7; --panel-border:#C9D8D0;
+  --ink:#1E2421; --ink-2:#3D4F48; --ink-3:#5F6F68; --ink-4:#80868B;
+  --amber-text:#6B4E00; --amber-field:#FFFBEF; --amber-field-line:#E2C76E;
+  --danger-line:#E3B4B4; --danger-ink:#8A2C2C;
+  --font-ui:'Public Sans DALM','Helvetica Neue',Arial,sans-serif;
+  --font-mail:Arial,Helvetica,sans-serif}
+*{box-sizing:border-box}
+.root{font-family:var(--font-ui);color:var(--ink);font-size:14px;line-height:1.4}
+button{font-family:inherit;cursor:pointer}
+:focus-visible{outline:3px solid #2F6FD0;outline-offset:2px}
 
-function createDraftButton(composeBox) {
-  injectSpinnerStyle()
+.btn-primary{font-size:14.5px;font-weight:600;padding:0 22px;min-height:44px;border-radius:22px;border:0;background:var(--green-700);color:#fff;display:inline-flex;align-items:center;gap:8px}
+.btn-secondary{font-size:13.5px;font-weight:600;padding:0 16px;min-height:40px;border-radius:20px;border:1px solid var(--green-300);background:#fff;color:var(--green-700)}
+.btn-quiet{font-size:14.5px;font-weight:600;padding:0 16px;min-height:44px;border-radius:22px;border:0;background:transparent;color:var(--ink-2)}
+.link{font-size:12.5px;font-weight:600;padding:0 6px;min-height:30px;border:0;background:transparent;color:var(--green-700);text-decoration:underline}
+.link.muted{color:var(--ink-2)}
 
-  const button = document.createElement('button')
-  button.textContent = 'Draft reply'
-  button.style.cssText = `
-    position: fixed;
-    z-index: 99999;
-    padding: 4px 10px;
-    font-size: 12px;
-    border: 1px solid #dadce0;
-    border-radius: 4px;
-    background: #f8f9fa;
-    color: #1a73e8;
-    cursor: pointer;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.15s ease;
+.bar{display:flex;flex-direction:column;gap:10px}
+.bar-card{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 16px;background:var(--green-50);border:1px solid var(--green-200);border-radius:12px}
+.badge{flex:0 0 auto;width:34px;height:34px;border-radius:50%;background:var(--green-700);color:#fff;display:flex;align-items:center;justify-content:center}
+.badge.sm{width:24px;height:24px}
+.bar-text{flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:2px}
+.bar-text strong{font-size:15px;color:var(--green-900)}
+.bar-text span{font-size:13.5px;color:var(--ink-2)}
+.mail-hint{font-family:var(--font-mail);font-size:14px;color:var(--ink-4);padding-left:2px}
+.chip-row{display:flex;justify-content:flex-end}
+.chip{display:inline-flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;padding:0 16px;min-height:40px;border-radius:20px;border:1px solid var(--green-200);background:var(--green-50);color:var(--green-700)}
+
+.panel{display:flex;flex-direction:column;background:#fff;border:1px solid var(--panel-border);border-radius:14px;overflow:hidden;height:560px}
+.panel.top{height:auto;max-height:520px}
+.panel-head{display:flex;align-items:center;gap:6px;padding:12px 16px;border-bottom:1px solid var(--panel-line)}
+.panel-head strong{flex:1 1 auto;font-size:15px;color:var(--green-900)}
+.panel-body{flex:1 1 auto;overflow-y:auto;padding:14px 18px 10px;display:flex;flex-direction:column;gap:14px}
+.panel-foot{display:flex;flex-direction:column;gap:10px;padding:12px 18px;border-top:1px solid var(--panel-line);background:#F7FAF8}
+.row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.steps{padding:18px;display:flex;flex-direction:column;gap:12px}
+.step{display:flex;gap:10px;align-items:center;font-size:14.5px}
+.step.pending{color:#A3ADA8}
+.step-dots{width:18px;text-align:center;color:var(--green-300);font-weight:700}
+.summary{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--ink-3)}
+.summary span{flex:1 1 auto}
+.steplist{margin:0;padding:0 0 0 23px;list-style:none;display:flex;flex-direction:column;gap:3px;font-size:12.5px;color:var(--ink-3)}
+.request{margin:0;font-size:14px;line-height:1.5}
+.section{display:flex;flex-direction:column;gap:8px}
+.section-head{display:flex;align-items:baseline;gap:8px}
+.section-head strong{flex:1 1 auto;font-size:14px}
+.section-head span{font-size:12.5px;font-weight:600;color:var(--ink-2);white-space:nowrap}
+.hint{font-size:12.5px;color:var(--ink-3)}
+.crit{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px}
+.crit li{display:flex;gap:10px;align-items:flex-start;padding:6px;margin:0 -6px;border-radius:10px}
+.crit li.review{background:#EEF6F1}
+.check{flex:0 0 auto;width:26px;height:26px;padding:0;border-radius:50%;border:2px solid #9DB5AA;background:#fff;color:#fff;display:flex;align-items:center;justify-content:center}
+.check.ai{border-color:var(--green-700)}
+.check[aria-checked="true"]{border-color:var(--green-600);background:var(--green-600)}
+.crit-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:5px}
+.crit-text{font-size:14px;line-height:1.45}
+.crit-text.done{color:var(--ink-3)}
+.status{font-size:12px;font-weight:600;color:var(--ink-3)}
+.status.review{color:var(--green-700)}
+.field{display:flex;align-items:center;gap:8px}
+.field label{flex:0 0 auto;width:118px;font-size:12.5px;color:var(--amber-text)}
+.field input,.edit input{flex:1 1 auto;min-width:0;font:inherit;font-size:13.5px;padding:0 10px;min-height:34px;border:1px solid var(--amber-field-line);border-radius:8px;background:var(--amber-field);color:var(--ink)}
+.field input.filled{border-color:#C4CDC8;background:#fff}
+.outside{display:flex;gap:10px;align-items:flex-start}
+.outside span{font-size:14px;line-height:1.45}
+.outside span.done{color:var(--ink-3)}
+.message{font-size:13px;font-weight:600;color:var(--green-700)}
+.message.warn{color:var(--amber-text)}
+.persist{display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--ink-3)}
+.persist input{width:15px;height:15px;margin:2px 0 0;accent-color:var(--green-700)}
+.edit-head{padding:12px 18px;border-bottom:1px solid var(--panel-line);display:flex;flex-direction:column;gap:2px}
+.edit-head strong{font-size:15px;color:var(--green-900)}
+.edit-head span{font-size:13px;color:var(--ink-2)}
+.edit{display:flex;gap:6px;align-items:center}
+.edit input{border-color:#C4CDC8;background:#fff;min-height:38px;padding:0 12px}
+.edit input.new{border-style:dashed;border-color:var(--green-300)}
+.btn-danger{flex:0 0 auto;font-size:12.5px;font-weight:600;padding:0 10px;min-height:38px;border-radius:8px;border:1px solid var(--danger-line);background:#fff;color:var(--danger-ink)}
+.btn-add{flex:0 0 auto;font-size:12.5px;font-weight:600;padding:0 12px;min-height:38px;border-radius:8px;border:1px solid var(--green-300);background:#fff;color:var(--green-700)}
+
+.guide{background:#fff;border:1px solid var(--green-200);border-radius:16px;box-shadow:0 12px 32px rgba(23,40,34,.22);padding:20px 22px;display:flex;flex-direction:column;gap:14px}
+.eyebrow{font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--green-700)}
+.guide > strong{font-size:19px;line-height:1.25;color:var(--green-900)}
+.guide ol{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px;font-size:14.5px}
+.guide li{display:flex;gap:12px;align-items:flex-start}
+.num{flex:0 0 auto;width:24px;height:24px;border-radius:50%;background:var(--green-100);color:var(--green-700);font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center}
+@media (prefers-reduced-motion: reduce){*{transition:none!important}}
+`
+
+// Page-level styles: the font, and the anchor for our host element.
+const PANEL_WIDTH = 400
+const PANEL_HEIGHT = 560
+const PANEL_GAP = 16
+const NARROW_BELOW = 820 // reply body narrower than this: panel goes above the text
+
+function injectPageStyles() {
+  if (document.getElementById('dalm-page-style')) return
+  const style = document.createElement('style')
+  style.id = 'dalm-page-style'
+  const font = chrome.runtime.getURL('fonts/public-sans-latin-wght-normal.woff2')
+  style.textContent = `
+    @font-face{font-family:'Public Sans DALM';font-style:normal;font-weight:100 900;font-display:swap;
+      src:url(${font}) format('woff2-variations'),url(${font}) format('woff2')}
+    [data-dalm-parent]{position:relative !important}
+    [data-dalm-host]{display:block;position:absolute;z-index:2;margin:0}
   `
-  button.dataset.busy = 'false'
+  document.head.appendChild(style)
+}
 
-  button.addEventListener('click', async (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    hideNotice()
+// Gmail listens for keyboard shortcuts on the page. Key events from inside a
+// shadow root are retargeted to the host, so typing "c" in one of our fields
+// would open a new message. Stop them (and clicks) at the host.
+function isolateEvents(host) {
+  for (const type of ['keydown', 'keyup', 'keypress', 'input', 'mousedown', 'mouseup', 'click']) {
+    host.addEventListener(type, (e) => e.stopPropagation())
+  }
+}
 
-    const draft = (composeBox.innerText || composeBox.textContent || '').trim()
-    const thread = readThread(composeBox)
-    const original = thread ? thread.text : ''
-    const text = original ? (draft ? `${original}\n\n${draft}` : original) : draft
-    if (!text) {
-      showNotice('Write something, or open an email to reply to, first.')
-      return
+// --- Rendering helpers ------------------------------------------------------
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+const SPARK = (s) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.8 4.7 4.7 1.8-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/></svg>`
+const TICK = (s, color, w) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`
+
+// --- First-use guide (one per page) -----------------------------------------
+let guideHost = null
+
+function showGuide() {
+  if (guideHost) return
+  guideHost = document.createElement('div')
+  guideHost.style.cssText = `position:fixed;top:96px;left:50%;transform:translateX(-50%);z-index:2147483000;width:min(560px,calc(100vw - 32px))`
+  isolateEvents(guideHost)
+  const root = guideHost.attachShadow({ mode: 'open' })
+  root.innerHTML = `<style>${UI_CSS}</style>
+    <div class="root guide" role="dialog" aria-label="Como funciona o Assistente DALM"><span class="eyebrow">Assistente DALM · opcional</span>
+    <strong>Uma ajuda para não esquecer nada nas respostas</strong><ol>
+    <li><span class="num">1</span><span>Clique em <strong>Preparar a lista</strong>. O assistente diz o que percebeu do pedido e o que a resposta deve tratar.</span></li>
+    <li><span class="num">2</span><span>Marque os pontos que já tratou. Se faltar informação, preencha-a ou deixe em branco.</span></li>
+    <li><span class="num">3</span><span>Se quiser, clique em <strong>Gerar o que falta</strong>: o assistente só escreve os pontos por marcar. Leia o texto e marque cada ponto. <strong>Nada é enviado sem si.</strong></span></li>
+    </ol><div><button class="btn-primary" data-a="closeGuide">Percebi</button></div></div>`
+  root.addEventListener('click', (e) => { if (e.target.closest('[data-a="closeGuide"]')) closeGuide() })
+  root.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeGuide() })
+  document.body.appendChild(guideHost)
+  root.querySelector('[data-a="closeGuide"]').focus()
+}
+
+function closeGuide() {
+  if (!guideHost) return
+  guideHost.remove()
+  guideHost = null
+  savePref('guideSeen', true)
+}
+
+// --- The assistant attached to one reply box --------------------------------
+function createAssistant(replyBox) {
+  const parent = replyBox.parentElement
+  const host = document.createElement('div')
+  host.dataset.dalmHost = ''
+  isolateEvents(host)
+  const root = host.attachShadow({ mode: 'open' })
+  parent.dataset.dalmParent = ''
+  parent.insertBefore(host, replyBox)
+
+  // Gmail's own spacing, so ours is added on top of it rather than replacing it.
+  const base = getComputedStyle(replyBox)
+  const basePadTop = parseFloat(base.paddingTop) || 0
+  const basePadRight = parseFloat(base.paddingRight) || 0
+  const baseMinHeight = replyBox.style.minHeight
+
+  const freshPoints = () => EXAMPLE_LIST.points.map((p) => ({ ...p, done: false, ai: false }))
+  let S = {
+    view: 'ready', // 'ready' | 'declined' | 'working' | 'list'
+    points: freshPoints(), values: {}, outsideDone: false,
+    editing: false, snapshot: null, newText: '',
+    stepTexts: [], stepIdx: 0, stepsOpen: false, hadList: false
+  }
+  let timer = null
+  let narrow = false
+
+  function set(patch) {
+    S = Object.assign({}, S, typeof patch === 'function' ? patch(S) : patch)
+    render()
+  }
+
+  const has = (key) => !!(S.values[key] || '').trim()
+
+  function runSteps(texts, after) {
+    clearTimeout(timer)
+    set({ view: 'working', stepTexts: texts, stepIdx: 0, editing: false })
+    const tick = (i) => {
+      timer = setTimeout(() => {
+        if (i >= texts.length) { set(after); return }
+        set({ stepIdx: i })
+        tick(i + 1)
+      }, STEP_DELAY_MS)
+    }
+    tick(1)
+  }
+
+  function currentMode() {
+    const panelOpen = S.view === 'working' || S.view === 'list'
+    return panelOpen && !narrow ? 'side' : 'top'
+  }
+
+  // The host floats over the reply body, anchored to the editable box itself,
+  // and the editable gets padding so the person's text starts clear of it:
+  // above the text for the bar, chip and narrow panel, beside it for the side
+  // panel. Only the editable's inline style changes, never its content, so
+  // none of this is sent with the email.
+  function layout() {
+    if (!replyBox.isConnected) return
+    const mode = currentMode()
+    const top = replyBox.offsetTop
+    const left = replyBox.offsetLeft
+    const width = replyBox.offsetWidth
+    host.style.top = `${top}px`
+    if (mode === 'side') {
+      host.style.left = `${left + width - PANEL_WIDTH - basePadRight}px`
+      host.style.width = `${PANEL_WIDTH}px`
+    } else {
+      host.style.left = `${left}px`
+      host.style.width = `${width - basePadRight}px`
+    }
+    const spaceAbove = mode === 'side' ? 0 : host.offsetHeight + 8
+    const spaceRight = mode === 'side' ? PANEL_WIDTH + PANEL_GAP : 0
+    replyBox.style.setProperty('padding-top', `${basePadTop + spaceAbove}px`, 'important')
+    replyBox.style.setProperty('padding-right', `${basePadRight + spaceRight}px`, 'important')
+    if (mode === 'side') replyBox.style.setProperty('min-height', `${PANEL_HEIGHT}px`, 'important')
+    else replyBox.style.minHeight = baseMinHeight
+  }
+
+  function render() {
+    const mode = currentMode()
+    host.dataset.dalmMode = mode
+
+    const active = root.activeElement && root.activeElement.id
+      ? { id: root.activeElement.id, pos: root.activeElement.selectionStart }
+      : null
+
+    let h = ''
+    if (S.view === 'ready') h = renderBar()
+    else if (S.view === 'declined') h = `<div class="chip-row"><button class="chip" data-a="reopen">${SPARK(15)} Mostrar assistente</button></div>`
+    else h = renderPanel(mode)
+    root.innerHTML = `<style>${UI_CSS}</style><div class="root">${h}</div>`
+    layout()
+
+    if (active) {
+      const el = root.getElementById(active.id)
+      if (el) {
+        el.focus()
+        if (el.setSelectionRange && active.pos != null) el.setSelectionRange(active.pos, active.pos)
+      }
+    }
+  }
+
+  function renderBar() {
+    return `<div class="bar"><div class="bar-card">
+      <span class="badge">${SPARK(18)}</span>
+      <div class="bar-text"><strong>Quer ajuda com este pedido?</strong><span>O assistente pode preparar uma lista do que a resposta deve tratar. Só lê o email se clicar.</span></div>
+      <button class="btn-primary" data-a="askList">Preparar a lista</button>
+      <button class="btn-quiet" data-a="decline">Não, obrigado</button>
+    </div><span class="mail-hint">Ou escreva a sua resposta aqui, como sempre.</span></div>`
+  }
+
+  function renderPanel(mode) {
+    let h = `<aside class="panel ${mode === 'top' ? 'top' : ''}" aria-label="Assistente DALM"><div class="panel-head"><span class="badge sm">${SPARK(13)}</span><strong>Assistente DALM</strong>
+      <button class="link" data-a="openHelp">Como funciona</button><button class="link muted" data-a="hide">Esconder</button></div>`
+
+    if (S.view === 'working') {
+      return h + `<div class="steps">` + S.stepTexts.map((t, i) => `<div class="step ${i > S.stepIdx ? 'pending' : ''}">${i < S.stepIdx ? TICK(18, '#2F8A63', 2.6) : '<span class="step-dots" aria-hidden="true">…</span>'}<span>${esc(t)}</span></div>`).join('') +
+        `<div><button class="btn-secondary" data-a="cancel">Cancelar</button></div></div></aside>`
     }
 
-    const originalLabel = button.textContent
-    button.dataset.busy = 'true'
-    button.disabled = true
-    button.style.cursor = 'default'
-    button.style.background = '#e8f0fe'
-    button.innerHTML = '<span class="mail-recommender-spinner"></span>Drafting reply…'
-    showNotice('Drafting a reply — this can take up to a minute, hang tight…')
+    if (S.editing) {
+      return h + `<div class="edit-head"><strong>A editar a lista</strong><span>Mude o texto, apague ou acrescente pontos. A lista é sua.</span></div>
+        <div class="panel-body" style="gap:8px">` +
+        S.points.map((p) => `<div class="edit"><input id="edit-${p.id}" aria-label="Ponto da lista" value="${esc(p.title + ': ' + p.desc)}" data-edit="${p.id}"><button class="btn-danger" data-a="removePoint" data-id="${p.id}">Apagar</button></div>`).join('') +
+        `<form class="edit" data-form="add"><input id="new-point" class="new" aria-label="Novo ponto" placeholder="Novo ponto, ex.: Contacto: indicar a quem perguntar" value="${esc(S.newText)}" data-new="1"><button class="btn-add" type="submit">Acrescentar</button></form></div>
+        <div class="panel-foot" style="flex-direction:row"><button class="btn-primary" style="font-size:14px;min-height:42px" data-a="finishEdit">Concluir</button><button class="btn-quiet" style="font-size:14px" data-a="cancelEdit">Cancelar alterações</button></div></aside>`
+    }
 
-    try {
-      const result = await fetchRecommendation(text)
-      if (result.in_scope && result.reply) {
-        replaceComposeBoxText(composeBox, result.reply)
-        hideNotice()
-      } else {
-        showNotice('This does not look like a DALM-related question, so no reply was drafted.')
-      }
-    } catch (err) {
-      showNotice('Could not reach the recommender backend.')
-    } finally {
-      button.dataset.busy = 'false'
-      button.disabled = false
-      button.style.cursor = 'pointer'
-      button.style.background = '#f8f9fa'
-      button.textContent = originalLabel
+    const anyAI = S.points.some((p) => p.ai)
+    const toWrite = S.points.filter((p) => !p.done && !p.ai)
+    const doneCount = S.points.filter((p) => p.done).length
+    const totalNeeds = S.points.reduce((n, p) => n + p.needs.length, 0)
+
+    h += `<div class="panel-body">
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div class="summary">${TICK(15, '#5F8F7C', 2.6)}<span>${anyAI ? 'Escrevi os pontos que estavam por marcar' : 'Li o email e preparei esta lista'}</span>
+        <button class="link" aria-expanded="${S.stepsOpen}" data-a="toggleSteps">${S.stepsOpen ? 'Esconder passos' : 'Ver passos'}</button></div>
+        ${S.stepsOpen ? `<ul class="steplist"><li>Li o email</li><li>Percebi o pedido</li><li>Procurei a informação nas fontes a que tenho acesso</li><li>Não encontrei ${totalNeeds} informações (marcadas abaixo)</li></ul>` : ''}
+      </div>
+      <p class="request"><strong>O pedido:</strong> ${esc(EXAMPLE_LIST.request)}</p>
+      <div class="section">
+        <div class="section-head"><strong>A resposta deve tratar:</strong><span>${doneCount} de ${S.points.length} tratados</span></div>
+        <span class="hint">${anyAI ? 'Marque cada ponto quando estiver satisfeito com o texto.' : 'Marque os pontos que já tratou. O assistente só escreve os que ficarem por marcar.'}</span>
+        <ul class="crit">` + S.points.map((p) => {
+          const missing = p.needs.filter((n) => !has(n.key))
+          let status = ''
+          let cls = ''
+          if (p.ai && !p.done) { status = 'Escrito pelo assistente · leia o texto e marque'; cls = 'review' }
+          else if (p.ai && p.done) status = 'Escrito pelo assistente · revisto por si'
+          else if (p.done) status = 'Tratado por si'
+          const showFields = !p.done || missing.length > 0
+          return `<li class="${p.ai && !p.done ? 'review' : ''}">
+            <button class="check ${p.ai ? 'ai' : ''}" role="checkbox" aria-checked="${p.done}" aria-label="Marcar «${esc(p.title)}» como tratado" data-a="toggle" data-id="${p.id}">${p.done ? TICK(14, 'currentColor', 3) : ''}</button>
+            <div class="crit-main"><span class="crit-text ${p.done ? 'done' : ''}"><strong>${esc(p.title)}</strong>: ${esc(p.desc)}</span>
+            ${status ? `<span class="status ${cls}">${status}</span>` : ''}
+            ${showFields ? p.needs.map((n) => `<div class="field"><label for="need-${n.key}">${esc(n.label)}</label><input id="need-${n.key}" class="${has(n.key) ? 'filled' : ''}" placeholder="não encontrei" value="${esc(S.values[n.key] || '')}" data-key="${n.key}"></div>`).join('') : ''}
+            </div></li>`
+        }).join('') + `</ul></div>
+      <div style="display:flex;flex-direction:column;gap:6px"><strong style="font-size:14px">Fora do email, faz você:</strong>
+        <div class="outside"><button class="check" role="checkbox" aria-checked="${S.outsideDone}" aria-label="Marcar como feito: ${esc(EXAMPLE_LIST.outside)}" data-a="toggleOutside">${S.outsideDone ? TICK(14, 'currentColor', 3) : ''}</button><span class="${S.outsideDone ? 'done' : ''}">${esc(EXAMPLE_LIST.outside)}</span></div>
+      </div></div>`
+
+    const missingInText = S.points.filter((p) => p.ai).reduce((n, p) => n + p.needs.filter((x) => !has(x.key)).length, 0)
+    const unreviewed = S.points.filter((p) => p.ai && !p.done).length
+    let msg = ''
+    let warn = false
+    if (missingInText > 0) { msg = missingInText === 1 ? 'Falta 1 informação, a amarelo no texto.' : `Faltam ${missingInText} informações, a amarelo no texto.`; warn = true }
+    else if (unreviewed > 0) msg = 'Leia o texto do assistente e marque cada ponto.'
+    else if (doneCount === S.points.length && S.points.length) msg = S.outsideDone ? 'Tudo tratado. Envie quando quiser.' : 'Resposta tratada. Falta a tarefa fora do email.'
+
+    h += `<div class="panel-foot">${msg ? `<span class="message ${warn ? 'warn' : ''}">${msg}</span>` : ''}<div class="row">
+      ${toWrite.length ? `<button class="btn-primary" data-a="generate">${SPARK(15)} ${toWrite.length === S.points.length ? 'Gerar resposta' : `Gerar o que falta (${toWrite.length})`}</button>` : ''}
+      ${anyAI ? `<button class="btn-secondary" data-a="regenerate">Gerar outra versão</button><button class="link muted" data-a="removeAI">Retirar texto do assistente</button>` : `<button class="link" data-a="startEdit">Editar lista</button>`}
+      </div><label class="persist"><input type="checkbox" id="always" ${prefs.prepareAlways ? 'checked' : ''} data-a="toggleAlways">Preparar esta lista sempre que abro uma resposta (fica guardado)</label></div></aside>`
+    return h
+  }
+
+  // Generating only flags points in the panel for now; inserting the text
+  // into the email is build step 5.
+  const actions = {
+    askList: () => runSteps(STEPS_LIST, { view: 'list', hadList: true, points: freshPoints(), values: {} }),
+    decline: () => set({ view: 'declined' }),
+    reopen: () => set({ view: S.hadList ? 'list' : 'ready' }),
+    hide: () => { clearTimeout(timer); set({ view: 'declined', hadList: S.hadList || S.view === 'list' }) },
+    cancel: () => { clearTimeout(timer); set({ view: S.hadList ? 'list' : 'ready' }) },
+    openHelp: () => showGuide(),
+    toggleSteps: () => set({ stepsOpen: !S.stepsOpen }),
+    toggle: (el) => set({ points: S.points.map((p) => p.id === el.dataset.id ? { ...p, done: !p.done } : p) }),
+    toggleOutside: () => set({ outsideDone: !S.outsideDone }),
+    generate: () => {
+      const ids = S.points.filter((p) => !p.done && !p.ai).map((p) => p.id)
+      runSteps(STEPS_GENERATE, (s) => ({ view: 'list', points: s.points.map((p) => ids.includes(p.id) ? { ...p, ai: true } : p) }))
+    },
+    regenerate: () => runSteps(STEPS_REGENERATE, { view: 'list' }),
+    removeAI: () => set({ points: S.points.map((p) => p.ai ? { ...p, ai: false, done: false } : p) }),
+    startEdit: () => set({ editing: true, snapshot: S.points }),
+    finishEdit: () => set({ editing: false }),
+    cancelEdit: () => set({ editing: false, points: S.snapshot || S.points }),
+    removePoint: (el) => set({ points: S.points.filter((p) => p.id !== el.dataset.id) })
+  }
+
+  root.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-a]')
+    if (!el || el.tagName === 'INPUT') return
+    if (actions[el.dataset.a]) actions[el.dataset.a](el)
+  })
+  root.addEventListener('change', (e) => {
+    if (e.target.dataset.a === 'toggleAlways') {
+      savePref('prepareAlways', e.target.checked)
+      render()
     }
   })
+  root.addEventListener('input', (e) => {
+    const t = e.target
+    if (t.dataset.key) set({ values: { ...S.values, [t.dataset.key]: t.value } })
+    else if (t.dataset.edit) {
+      const v = t.value
+      const i = v.indexOf(':')
+      const patch = i >= 0 ? { title: v.slice(0, i).trim(), desc: v.slice(i + 1).trim() } : { title: v.trim(), desc: '' }
+      set({ points: S.points.map((p) => p.id === t.dataset.edit ? { ...p, ...patch } : p) })
+    } else if (t.dataset.new) set({ newText: t.value })
+  })
+  root.addEventListener('submit', (e) => {
+    e.preventDefault()
+    const v = S.newText.trim()
+    if (!v) return
+    const i = v.indexOf(':')
+    const item = i >= 0 ? { title: v.slice(0, i).trim(), desc: v.slice(i + 1).trim() } : { title: v, desc: '' }
+    set({ newText: '', points: S.points.concat([{ id: 'n' + Date.now(), needs: [], done: false, ai: false, ...item }]) })
+  })
 
-  return button
-}
+  // Typing in the reply collapses the ready bar into "Mostrar assistente".
+  replyBox.addEventListener('input', () => {
+    if (S.view === 'ready') set({ view: 'declined' })
+  })
 
-function attachToComposeBox(composeBox) {
-  if (composeBox.dataset.mailRecommenderAttached) return
-  // The assistant lives only in inline replies to an open thread.
-  const threadView = findThreadView(composeBox)
-  if (!threadView) return
-  composeBox.dataset.mailRecommenderAttached = 'true'
+  // Re-anchor when the reply box or our own content changes size, and put the
+  // panel above the text when the reply body is too narrow for a column.
+  const resizeObserver = new ResizeObserver(() => {
+    const isNarrow = replyBox.offsetWidth < NARROW_BELOW
+    if (isNarrow !== narrow) { narrow = isNarrow; render() } else layout()
+  })
+  resizeObserver.observe(replyBox)
+  resizeObserver.observe(host)
 
-  const button = createDraftButton(composeBox)
-  document.body.appendChild(button)
-  positionOverComposeBox(button, composeBox)
-
-  const reveal = () => {
-    button.style.opacity = '1'
-    button.style.pointerEvents = 'auto'
-  }
-  const conceal = () => {
-    if (button.dataset.busy === 'true') return
-    button.style.opacity = '0'
-    button.style.pointerEvents = 'none'
-  }
-  composeBox.addEventListener('mouseenter', reveal)
-  composeBox.addEventListener('mouseleave', conceal)
-  button.addEventListener('mouseenter', reveal)
-  button.addEventListener('mouseleave', conceal)
-
-  const reposition = () => positionOverComposeBox(button, composeBox)
-  window.addEventListener('scroll', reposition, true)
-  window.addEventListener('resize', reposition)
-
-  // Gmail removes the compose box from the DOM when it's closed; poll for
-  // that since there's no reliable event for it.
+  // Gmail removes the reply box when it's closed or sent; poll for that since
+  // there's no reliable event for it.
   const cleanupInterval = setInterval(() => {
-    if (!composeBox.isConnected) {
-      button.remove()
-      window.removeEventListener('scroll', reposition, true)
-      window.removeEventListener('resize', reposition)
-      clearInterval(cleanupInterval)
-    }
+    if (replyBox.isConnected) return
+    clearTimeout(timer)
+    clearInterval(cleanupInterval)
+    resizeObserver.disconnect()
+    host.remove()
   }, 1000)
 
-  composeBox.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') hideNotice()
-  })
+  narrow = replyBox.offsetWidth < NARROW_BELOW
+  render()
+  if (!prefs.guideSeen) showGuide()
+  if (prefs.prepareAlways) actions.askList()
 }
 
-// Watch for Gmail compose boxes being added to the DOM
+async function attachToReplyBox(replyBox) {
+  if (replyBox.dataset.dalmAttached) return
+  // The assistant lives only in inline replies to an open thread.
+  if (!findThreadView(replyBox)) return
+  replyBox.dataset.dalmAttached = 'true'
+  injectPageStyles()
+  await prefsReady
+  if (replyBox.isConnected) createAssistant(replyBox)
+}
+
+// Watch for Gmail reply boxes being added to the DOM
 const observer = new MutationObserver(() => {
   document.querySelectorAll('div[role="textbox"][aria-label]')
-    .forEach(attachToComposeBox)
+    .forEach(attachToReplyBox)
 })
 
 observer.observe(document.body, { childList: true, subtree: true })
