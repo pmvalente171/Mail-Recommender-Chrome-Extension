@@ -1,0 +1,423 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<title>Assistente DALM no Gmail</title>
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&amp;display=swap">
+<style>
+body{margin:0}
+</style>
+</helmet>
+<div style="position: relative; width: 1440px; height: 1358px; overflow: hidden; font-family: 'Public Sans', 'Helvetica Neue', sans-serif; color: #1E2421; background: #F8FAFD">
+  <img src="/_blob/037ee08a84d26716fb8309ff4210ba59" alt="Gmail com o email de um encarregado de educação aberto e a caixa de resposta" style="position: absolute; left: 0; top: 0; width: 1440px; height: 1358px; display: block">
+
+  <sc-if value="{{ isReady }}" hint-placeholder-val="{{ true }}">
+    <div style="position: absolute; left: 405px; top: 528px; width: 968px; display: flex; flex-direction: column; gap: 14px">
+      <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap; padding: 14px 16px; background: #F2F7F4; border: 1px solid #A9C9BB; border-radius: 12px">
+        <span style="flex: 0 0 auto; width: 34px; height: 34px; border-radius: 50%; background: #1F5C4A; color: #FFFFFF; display: flex; align-items: center; justify-content: center">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.8 4.7 4.7 1.8-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"></path></svg>
+        </span>
+        <div style="flex: 1 1 320px; min-width: 0; display: flex; flex-direction: column; gap: 2px">
+          <strong style="font-size: 15px; color: #173F33">Quer ajuda com este pedido?</strong>
+          <span style="font-size: 13.5px; color: #3D4F48">O assistente pode preparar uma lista do que a resposta deve tratar. Só lê o email se clicar.</span>
+        </div>
+        <button type="button" onClick="{{ askList }}" style="font-family: inherit; font-size: 14.5px; font-weight: 600; padding: 0 22px; min-height: 44px; border-radius: 22px; border: 0; background: #1F5C4A; color: #FFFFFF; cursor: pointer">Preparar a lista</button>
+        <button type="button" onClick="{{ decline }}" style="font-family: inherit; font-size: 14.5px; font-weight: 600; padding: 0 16px; min-height: 44px; border-radius: 22px; border: 0; background: transparent; color: #3D4F48; cursor: pointer">Não, obrigado</button>
+      </div>
+      <span style="font-family: Arial, Helvetica, sans-serif; font-size: 14px; color: #80868B; padding-left: 2px">Ou escreva a sua resposta aqui, como sempre.</span>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ isDeclined }}" hint-placeholder-val="{{ false }}">
+    <button type="button" onClick="{{ reopen }}" style="position: absolute; left: 1160px; top: 530px; display: flex; align-items: center; gap: 8px; font-family: inherit; font-size: 13.5px; font-weight: 600; padding: 0 16px; min-height: 40px; border-radius: 20px; border: 1px solid #A9C9BB; background: #F2F7F4; color: #1F5C4A; cursor: pointer">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.8 4.7 4.7 1.8-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"></path></svg>
+      Mostrar assistente
+    </button>
+  </sc-if>
+
+  <sc-if value="{{ showPanel }}" hint-placeholder-val="{{ false }}">
+    <div style="position: absolute; left: 407px; top: 532px; width: 545px; height: 600px; overflow: hidden; font-family: Arial, Helvetica, sans-serif; font-size: 14px; line-height: 1.55; color: #202124; display: flex; flex-direction: column; gap: 12px">
+      <sc-if value="{{ hasText }}" hint-placeholder-val="{{ false }}">
+        <p style="margin: 0">Caro Pedro Valente,</p>
+        <p style="margin: 0">Obrigado pelo seu contacto sobre a Licenciatura em Análise e Engenharia de Dados.</p>
+        <sc-for list="{{ paras }}" as="para" hint-placeholder-count="3">
+          <p style="margin: 0; color: {{ para.color }}; font-style: {{ para.style }}"><sc-for list="{{ para.segs }}" as="seg" hint-placeholder-count="2"><sc-if value="{{ seg.field }}" hint-placeholder-val="{{ false }}"><span style="background: #FBE7A1; border-bottom: 2px dashed #B8921C; padding: 0 4px; border-radius: 3px; color: #5A4400; font-style: normal">{{ seg.t }}</span></sc-if><sc-if value="{{ seg.plain }}" hint-placeholder-val="{{ true }}"><span>{{ seg.t }}</span></sc-if></sc-for></p>
+        </sc-for>
+        <p style="margin: 0; white-space: pre-line">Com os melhores cumprimentos,
+Divisão Académica</p>
+      </sc-if>
+      <sc-if value="{{ noText }}" hint-placeholder-val="{{ true }}">
+        <p style="margin: 0; color: #80868B">Escreva aqui a sua resposta, usando a lista como guia. Ou clique em Gerar resposta.</p>
+      </sc-if>
+    </div>
+
+    <aside aria-label="Assistente DALM" style="position: absolute; left: 968px; top: 528px; width: 406px; height: 612px; box-sizing: border-box; display: flex; flex-direction: column; background: #FFFFFF; border: 1px solid #C9D8D0; border-radius: 14px; overflow: hidden">
+
+      <div style="display: flex; align-items: center; gap: 6px; padding: 12px 16px; border-bottom: 1px solid #E3EBE7">
+        <span style="flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; background: #1F5C4A; color: #FFFFFF; display: flex; align-items: center; justify-content: center">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.8 4.7 4.7 1.8-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"></path></svg>
+        </span>
+        <strong style="flex: 1 1 auto; font-size: 15px; color: #173F33">Assistente DALM</strong>
+        <button type="button" onClick="{{ openHelp }}" style="font-family: inherit; font-size: 12.5px; font-weight: 600; padding: 0 8px; min-height: 32px; border: 0; background: transparent; color: #1F5C4A; text-decoration: underline; cursor: pointer">Como funciona</button>
+        <button type="button" onClick="{{ hide }}" style="font-family: inherit; font-size: 12.5px; font-weight: 600; padding: 0 8px; min-height: 32px; border: 0; background: transparent; color: #3D4F48; text-decoration: underline; cursor: pointer">Esconder</button>
+      </div>
+
+      <sc-if value="{{ showSteps }}" hint-placeholder-val="{{ false }}">
+        <div style="flex: 1 1 auto; padding: 18px; display: flex; flex-direction: column; gap: 12px">
+          <sc-for list="{{ steps }}" as="st" hint-placeholder-count="3">
+            <div style="display: flex; gap: 10px; align-items: center; font-size: 14.5px; color: {{ st.color }}">
+              <sc-if value="{{ st.done }}" hint-placeholder-val="{{ true }}">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#2F8A63" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>
+              </sc-if>
+              <sc-if value="{{ st.current }}" hint-placeholder-val="{{ false }}">
+                <span aria-hidden="true" style="width: 18px; display: flex; justify-content: center; color: #8FB3A3; font-weight: 700">…</span>
+              </sc-if>
+              <span>{{ st.text }}</span>
+            </div>
+          </sc-for>
+          <button type="button" onClick="{{ cancel }}" style="align-self: flex-start; margin-top: 6px; font-family: inherit; font-size: 13px; font-weight: 600; padding: 0 14px; min-height: 36px; border-radius: 18px; border: 1px solid #C9D8D0; background: #FFFFFF; color: #3D4F48; cursor: pointer">Cancelar</button>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ showList }}" hint-placeholder-val="{{ true }}">
+        <div style="flex: 1 1 auto; overflow-y: auto; padding: 14px 18px 10px; display: flex; flex-direction: column; gap: 14px">
+
+          <div style="display: flex; flex-direction: column; gap: 6px">
+            <div style="display: flex; gap: 8px; align-items: center; font-size: 13px; color: #5F6F68">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#5F8F7C" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>
+              <span style="flex: 1 1 auto">{{ summaryLine }}</span>
+              <button type="button" onClick="{{ toggleSteps }}" aria-expanded="{{ stepsOpenStr }}" style="font-family: inherit; font-size: 12.5px; font-weight: 600; padding: 0 4px; min-height: 28px; border: 0; background: transparent; color: #1F5C4A; text-decoration: underline; cursor: pointer">{{ stepsToggleText }}</button>
+            </div>
+            <sc-if value="{{ stepsOpen }}" hint-placeholder-val="{{ false }}">
+              <ul style="margin: 0; padding: 0 0 0 23px; list-style: none; display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: #5F6F68">
+                <li>Li o email</li>
+                <li>Percebi o pedido</li>
+                <li>Procurei a informação nas fontes a que tenho acesso</li>
+                <li>Não encontrei {{ totalNeeds }} informações (marcadas abaixo)</li>
+              </ul>
+            </sc-if>
+          </div>
+
+          <p style="margin: 0; font-size: 14px; line-height: 1.5; color: #1E2421"><strong>O pedido:</strong> um encarregado de educação quer saber se a Licenciatura em Análise e Engenharia de Dados abre vagas em 2026/27 e quais as condições de acesso.</p>
+
+          <div style="display: flex; flex-direction: column; gap: 8px">
+            <div style="display: flex; align-items: baseline; gap: 8px">
+              <strong style="flex: 1 1 auto; font-size: 14px; color: #1E2421">A resposta deve tratar:</strong>
+              <span style="font-size: 12.5px; font-weight: 600; color: #3D4F48; white-space: nowrap">{{ doneCount }} de {{ total }} tratados</span>
+            </div>
+            <span style="font-size: 12.5px; color: #5F6F68">{{ ruleHint }}</span>
+            <ul style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px">
+              <sc-for list="{{ crit }}" as="c" hint-placeholder-count="4">
+                <li style="display: flex; gap: 10px; align-items: flex-start; padding: 6px 6px; margin: 0 -6px; border-radius: 10px; background: {{ c.rowBg }}">
+                  <button type="button" role="checkbox" aria-checked="{{ c.ariaChecked }}" aria-label="{{ c.checkLabel }}" onClick="{{ c.toggle }}" style="flex: 0 0 auto; width: 26px; height: 26px; margin-top: -1px; padding: 0; border-radius: 50%; border: 2px solid {{ c.ringColor }}; background: {{ c.fill }}; color: #FFFFFF; cursor: pointer; display: flex; align-items: center; justify-content: center; box-sizing: border-box">
+                    <sc-if value="{{ c.done }}" hint-placeholder-val="{{ false }}">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>
+                    </sc-if>
+                  </button>
+                  <div style="flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 5px">
+                    <span style="font-size: 14px; line-height: 1.45; color: {{ c.textColor }}"><strong>{{ c.title }}</strong>: {{ c.desc }}</span>
+                    <sc-if value="{{ c.hasStatus }}" hint-placeholder-val="{{ false }}">
+                      <span style="font-size: 12px; font-weight: 600; color: {{ c.statusColor }}">{{ c.status }}</span>
+                    </sc-if>
+                    <sc-for list="{{ c.fields }}" as="f" hint-placeholder-count="1">
+                      <div style="display: flex; align-items: center; gap: 8px">
+                        <label for="{{ f.inputId }}" style="flex: 0 0 auto; width: 118px; font-size: 12.5px; color: #6B4E00">{{ f.label }}</label>
+                        <input id="{{ f.inputId }}" type="text" value="{{ f.value }}" onChange="{{ f.onChange }}" placeholder="não encontrei" style="flex: 1 1 auto; min-width: 0; font-family: inherit; font-size: 13.5px; padding: 0 10px; min-height: 34px; box-sizing: border-box; border: 1px solid {{ f.border }}; border-radius: 8px; background: {{ f.bg }}; color: #1E2421">
+                      </div>
+                    </sc-for>
+                  </div>
+                </li>
+              </sc-for>
+            </ul>
+          </div>
+
+          <div style="display: flex; flex-direction: column; gap: 6px">
+            <strong style="font-size: 14px; color: #1E2421">Fora do email, faz você:</strong>
+            <div style="display: flex; gap: 10px; align-items: flex-start">
+              <button type="button" role="checkbox" aria-checked="{{ outsideAria }}" aria-label="Marcar como feito: pedir à equipa do site que publique a página do curso" onClick="{{ toggleOutside }}" style="flex: 0 0 auto; width: 26px; height: 26px; padding: 0; border-radius: 50%; border: 2px solid {{ outsideRing }}; background: {{ outsideFill }}; color: #FFFFFF; cursor: pointer; display: flex; align-items: center; justify-content: center; box-sizing: border-box">
+                <sc-if value="{{ outsideDone }}" hint-placeholder-val="{{ false }}">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"></path></svg>
+                </sc-if>
+              </button>
+              <span style="font-size: 14px; line-height: 1.45; color: {{ outsideColor }}">Pedir à equipa do site que publique a página do curso.</span>
+            </div>
+          </div>
+        </div>
+
+        <div style="display: flex; flex-direction: column; gap: 10px; padding: 12px 18px; border-top: 1px solid #E3EBE7; background: #F7FAF8">
+          <sc-if value="{{ hasMessage }}" hint-placeholder-val="{{ false }}">
+            <span style="font-size: 13px; font-weight: 600; color: {{ messageColor }}">{{ message }}</span>
+          </sc-if>
+          <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap">
+            <sc-if value="{{ canGenerate }}" hint-placeholder-val="{{ true }}">
+              <button type="button" onClick="{{ generate }}" style="display: flex; align-items: center; gap: 8px; font-family: inherit; font-size: 14.5px; font-weight: 600; padding: 0 20px; min-height: 44px; border-radius: 22px; border: 0; background: #1F5C4A; color: #FFFFFF; cursor: pointer">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.8 4.7 4.7 1.8-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"></path></svg>
+                {{ generateLabel }}
+              </button>
+            </sc-if>
+            <sc-if value="{{ hasAI }}" hint-placeholder-val="{{ false }}">
+              <button type="button" onClick="{{ regenerate }}" style="font-family: inherit; font-size: 13.5px; font-weight: 600; padding: 0 16px; min-height: 40px; border-radius: 20px; border: 1px solid #8FB3A3; background: #FFFFFF; color: #1F5C4A; cursor: pointer">Gerar outra versão</button>
+              <button type="button" onClick="{{ removeAI }}" style="font-family: inherit; font-size: 13px; font-weight: 600; padding: 0 4px; min-height: 36px; border: 0; background: transparent; color: #3D4F48; text-decoration: underline; cursor: pointer">Retirar texto do assistente</button>
+            </sc-if>
+            <sc-if value="{{ noAI }}" hint-placeholder-val="{{ true }}">
+              <button type="button" onClick="{{ startEdit }}" style="font-family: inherit; font-size: 13px; font-weight: 600; padding: 0 4px; min-height: 36px; border: 0; background: transparent; color: #1F5C4A; text-decoration: underline; cursor: pointer">Editar lista</button>
+            </sc-if>
+          </div>
+          <div style="display: flex; align-items: flex-start; gap: 8px">
+            <input type="checkbox" id="always-panel" checked="{{ always }}" onChange="{{ toggleAlways }}" style="flex: 0 0 auto; width: 15px; height: 15px; margin: 2px 0 0; accent-color: #1F5C4A">
+            <label for="always-panel" style="font-size: 12px; color: #5F6F68">Preparar esta lista sempre que abro uma resposta (fica guardado)</label>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ isEditing }}" hint-placeholder-val="{{ false }}">
+        <div style="display: flex; flex-direction: column; gap: 2px; padding: 12px 18px; border-bottom: 1px solid #E3EBE7">
+          <strong style="font-size: 15px; color: #173F33">A editar a lista</strong>
+          <span style="font-size: 13px; color: #3D4F48">Mude o texto, apague ou acrescente pontos. A lista é sua.</span>
+        </div>
+        <div style="flex: 1 1 auto; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px">
+          <sc-for list="{{ editRows }}" as="r" hint-placeholder-count="4">
+            <div style="display: flex; gap: 6px; align-items: center">
+              <input id="{{ r.inputId }}" type="text" aria-label="Ponto da lista" value="{{ r.text }}" onChange="{{ r.onText }}" style="flex: 1 1 auto; min-width: 0; font-family: inherit; font-size: 13.5px; padding: 0 12px; min-height: 38px; box-sizing: border-box; border: 1px solid #C4CDC8; border-radius: 8px; background: #FFFFFF; color: #1E2421">
+              <button type="button" onClick="{{ r.remove }}" style="flex: 0 0 auto; font-family: inherit; font-size: 12.5px; font-weight: 600; padding: 0 10px; min-height: 38px; border-radius: 8px; border: 1px solid #E3B4B4; background: #FFFFFF; color: #8A2C2C; cursor: pointer">Apagar</button>
+            </div>
+          </sc-for>
+          <form onSubmit="{{ addCrit }}" style="display: flex; gap: 6px; padding-top: 4px">
+            <input id="new-crit" type="text" aria-label="Novo ponto" value="{{ newText }}" onChange="{{ onNewText }}" placeholder="Novo ponto, ex.: Contacto: indicar a quem perguntar" style="flex: 1 1 auto; min-width: 0; font-family: inherit; font-size: 13.5px; padding: 0 12px; min-height: 38px; box-sizing: border-box; border: 1px dashed #8FB3A3; border-radius: 8px; background: #FFFFFF; color: #1E2421">
+            <button type="submit" style="flex: 0 0 auto; font-family: inherit; font-size: 12.5px; font-weight: 600; padding: 0 12px; min-height: 38px; border-radius: 8px; border: 1px solid #8FB3A3; background: #FFFFFF; color: #1F5C4A; cursor: pointer">Acrescentar</button>
+          </form>
+        </div>
+        <div style="display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid #E3EBE7; background: #F7FAF8">
+          <button type="button" onClick="{{ finishEdit }}" style="font-family: inherit; font-size: 14px; font-weight: 600; padding: 0 20px; min-height: 42px; border-radius: 21px; border: 0; background: #1F5C4A; color: #FFFFFF; cursor: pointer">Concluir</button>
+          <button type="button" onClick="{{ cancelEdit }}" style="font-family: inherit; font-size: 14px; font-weight: 600; padding: 0 14px; min-height: 42px; border-radius: 21px; border: 0; background: transparent; color: #3D4F48; cursor: pointer">Cancelar alterações</button>
+        </div>
+      </sc-if>
+    </aside>
+  </sc-if>
+
+  <sc-if value="{{ showGuide }}" hint-placeholder-val="{{ true }}">
+    <div role="dialog" aria-label="Como funciona o Assistente DALM" style="position: absolute; left: 520px; top: 236px; width: 560px; background: #FFFFFF; border: 1px solid #A9C9BB; border-radius: 16px; box-shadow: 0 12px 32px rgba(23, 40, 34, .22); padding: 20px 22px; display: flex; flex-direction: column; gap: 14px; box-sizing: border-box">
+      <span style="font-size: 12px; font-weight: 700; letter-spacing: .07em; text-transform: uppercase; color: #1F5C4A">Assistente DALM · opcional</span>
+      <strong style="font-size: 19px; line-height: 1.25; color: #173F33">Uma ajuda para não esquecer nada nas respostas</strong>
+      <ol style="margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 10px; font-size: 14.5px; color: #1E2421">
+        <li style="display: flex; gap: 12px; align-items: flex-start"><span style="flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; background: #EAF3EF; color: #1F5C4A; font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center">1</span><span>Clique em <strong>Preparar a lista</strong>. O assistente diz o que percebeu do pedido e o que a resposta deve tratar.</span></li>
+        <li style="display: flex; gap: 12px; align-items: flex-start"><span style="flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; background: #EAF3EF; color: #1F5C4A; font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center">2</span><span>Marque os pontos que já tratou. Se faltar informação, preencha-a ou deixe em branco.</span></li>
+        <li style="display: flex; gap: 12px; align-items: flex-start"><span style="flex: 0 0 auto; width: 24px; height: 24px; border-radius: 50%; background: #EAF3EF; color: #1F5C4A; font-weight: 700; font-size: 13px; display: flex; align-items: center; justify-content: center">3</span><span>Se quiser, clique em <strong>Gerar o que falta</strong>: o assistente só escreve os pontos por marcar. Leia o texto e marque cada ponto. <strong>Nada é enviado sem si.</strong></span></li>
+      </ol>
+      <div style="display: flex; gap: 8px; align-items: center">
+        <button type="button" onClick="{{ closeGuide }}" style="font-family: inherit; font-size: 14.5px; font-weight: 600; padding: 0 22px; min-height: 44px; border-radius: 22px; border: 0; background: #1F5C4A; color: #FFFFFF; cursor: pointer">Percebi</button>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props='{"startView":{"editor":"enum","options":["intro","ready","declined","list"],"default":"intro","section":"Estado inicial"},"startPreset":{"editor":"enum","options":["empty","before","after","filled"],"default":"empty","section":"Estado inicial"},"startEditing":{"editor":"boolean","default":false,"section":"Estado inicial"},"startAlways":{"editor":"boolean","default":false,"section":"Estado inicial"},"$preview":{"width":1440,"height":1358}}'>
+class Component extends DCLogic {
+  componentWillUnmount() { clearTimeout(this._t); }
+  renderVals() {
+    const s = this.state || {};
+    const p = this.props;
+    const BASE = [
+      { id: 'c2', title: 'Vagas', desc: 'dizer quantas vagas há no concurso de 2026/27.', needs: [{ key: 'vagas', label: 'N.º de vagas' }] },
+      { id: 'c3', title: 'Condições de acesso', desc: 'indicar as provas de ingresso e a nota mínima.', needs: [{ key: 'provas', label: 'Provas de ingresso' }, { key: 'nota', label: 'Nota mínima' }] },
+      { id: 'c4', title: 'Candidatura', desc: 'explicar onde e quando se candidata.', needs: [{ key: 'datas', label: 'Datas da 1.ª fase' }] },
+      { id: 'c5', title: 'Site', desc: 'lamentar que a informação ainda não esteja no nosso site.', needs: [] }
+    ];
+    const PARAS = {
+      c2: [{ t: 'No Concurso Nacional de Acesso 2026/27, o curso tem ' }, { k: 'vagas', t: 'n.º de vagas' }, { t: ' vagas.' }],
+      c3: [{ t: 'As provas de ingresso são ' }, { k: 'provas', t: 'provas de ingresso' }, { t: ' e a nota mínima de candidatura é ' }, { k: 'nota', t: 'nota mínima' }, { t: ' valores.' }],
+      c4: [{ t: 'A candidatura é feita no site da DGES, na 1.ª fase, entre ' }, { k: 'datas', t: 'datas da 1.ª fase' }, { t: '.' }],
+      c5: [{ t: 'Lamentamos que a informação ainda não esteja no nosso site. Vamos pedir que seja publicada com brevidade.' }]
+    };
+    const USER = { c5: 'Pedimos desculpa por a informação ainda não estar disponível no nosso site.' };
+    const PRESETS = {
+      empty: {},
+      before: { c5: [1, 0] },
+      after: { c5: [1, 0], c2: [1, 1], c3: [0, 1], c4: [0, 1] },
+      filled: { c5: [1, 0], c2: [1, 1], c3: [1, 1], c4: [1, 1] }
+    };
+    const PVALUES = { after: { vagas: '30' }, filled: { vagas: '30', provas: 'Matemática A', nota: '100', datas: '20 de julho e 4 de agosto' } };
+    const preset = p.startPreset || 'empty';
+    const make = () => BASE.map((c) => {
+      const v = (PRESETS[preset] || {})[c.id] || [0, 0];
+      return Object.assign({}, c, { done: v[0] === 1, ai: v[1] === 1, user: v[0] === 1 && v[1] === 0 });
+    });
+
+    const startView = p.startView || 'intro';
+    const view = s.view ?? (startView === 'intro' ? 'ready' : startView);
+    const guide = s.guide ?? (startView === 'intro');
+    const crit = s.crit ?? make();
+    const values = s.values ?? (PVALUES[preset] || {});
+    const editing = s.editing ?? (p.startEditing === true);
+    const snapshot = s.snapshot ?? crit;
+    const newText = s.newText ?? '';
+    const always = s.always ?? (p.startAlways === true);
+    const outsideDone = s.outsideDone ?? (preset === 'filled');
+    const stepIdx = s.stepIdx ?? 0;
+    const stepsOpen = s.stepsOpen ?? false;
+    const hadList = s.hadList ?? (startView === 'list');
+    const stepTexts = s.stepTexts ?? [];
+
+    const runSteps = (texts, after) => {
+      this.setState({ view: 'working', stepTexts: texts, stepIdx: 0, editing: false });
+      clearTimeout(this._t);
+      const tick = (i) => {
+        this._t = setTimeout(() => {
+          if (i >= texts.length) { this.setState(after); return; }
+          this.setState({ stepIdx: i });
+          tick(i + 1);
+        }, 650);
+      };
+      tick(1);
+    };
+    const setVal = (k) => (e) => this.setState({ values: Object.assign({}, values, { [k]: e.target.value }) });
+    const has = (k) => !!(values[k] || '').trim();
+    const upd = (id, patch) => crit.map((x) => x.id === id ? Object.assign({}, x, patch) : x);
+
+    const anyAI = crit.some((c) => c.ai);
+    const toWrite = crit.filter((c) => !c.done && !c.ai);
+    const doneCount = crit.filter((c) => c.done).length;
+    const total = crit.length;
+
+    const critRows = crit.map((c) => {
+      const needs = c.needs || [];
+      const missing = needs.filter((n) => !has(n.key));
+      let status = '', statusColor = '#5F6F68';
+      if (c.ai && !c.done) { status = 'Escrito pelo assistente · leia o texto e marque'; statusColor = '#1F5C4A'; }
+      else if (c.ai && c.done) { status = 'Escrito pelo assistente · revisto por si'; }
+      else if (c.done) { status = 'Tratado por si'; }
+      const showFields = !c.done || missing.length > 0;
+      return {
+        title: c.title,
+        desc: c.desc,
+        done: c.done,
+        ariaChecked: String(c.done),
+        checkLabel: 'Marcar «' + c.title + '» como tratado',
+        ringColor: c.done ? '#2F8A63' : (c.ai ? '#1F5C4A' : '#9DB5AA'),
+        fill: c.done ? '#2F8A63' : '#FFFFFF',
+        textColor: c.done ? '#5F6F68' : '#1E2421',
+        rowBg: c.ai && !c.done ? '#EEF6F1' : 'transparent',
+        hasStatus: status !== '',
+        status,
+        statusColor,
+        toggle: () => this.setState({ crit: upd(c.id, { done: !c.done, user: !c.done && !c.ai }) }),
+        fields: showFields ? needs.map((n) => ({
+          inputId: 'need-' + n.key,
+          label: n.label,
+          value: values[n.key] || '',
+          onChange: setVal(n.key),
+          border: has(n.key) ? '#C4CDC8' : '#E2C76E',
+          bg: has(n.key) ? '#FFFFFF' : '#FFFBEF'
+        })) : []
+      };
+    });
+    const totalNeeds = crit.reduce((n, c) => n + (c.needs || []).length, 0);
+    const missingInText = crit.filter((c) => c.ai).reduce((n, c) => n + (c.needs || []).filter((x) => !has(x.key)).length, 0);
+
+    const paras = [];
+    crit.forEach((c) => {
+      if (c.ai) {
+        paras.push({ color: '#202124', style: 'normal', segs: (PARAS[c.id] || [{ k: '_none', t: 'texto sobre ' + c.desc.replace(/\.$/, '') }]).map((x) => {
+          if (x.k && has(x.k)) return { t: values[x.k], field: false, plain: true };
+          if (x.k) return { t: x.t, field: true, plain: false };
+          return { t: x.t, field: false, plain: true };
+        }) });
+      } else if (c.done) {
+        if (USER[c.id]) paras.push({ color: '#202124', style: 'normal', segs: [{ t: USER[c.id], field: false, plain: true }] });
+        else paras.push({ color: '#80868B', style: 'italic', segs: [{ t: '(o seu texto sobre «' + c.title + '»)', field: false, plain: true }] });
+      }
+    });
+
+    let message = '', messageColor = '#1F5C4A';
+    const unreviewed = crit.filter((c) => c.ai && !c.done).length;
+    if (missingInText > 0) { message = missingInText === 1 ? 'Falta 1 informação, a amarelo no texto.' : 'Faltam ' + missingInText + ' informações, a amarelo no texto.'; messageColor = '#6B4E00'; }
+    else if (unreviewed > 0) { message = 'Leia o texto do assistente e marque cada ponto.'; }
+    else if (total > 0 && doneCount === total) { message = outsideDone ? 'Tudo tratado. Envie quando quiser.' : 'Resposta tratada. Falta a tarefa fora do email.'; }
+
+    const generateAfter = (ids) => (st) => ({
+      view: 'list', hadList: true,
+      crit: (st.crit ?? crit).map((x) => ids.indexOf(x.id) >= 0 ? Object.assign({}, x, { ai: true }) : x)
+    });
+
+    return {
+      showGuide: guide,
+      closeGuide: () => this.setState({ guide: false }),
+      openHelp: () => this.setState({ guide: true }),
+      isReady: view === 'ready' && !guide,
+      isDeclined: view === 'declined',
+      showPanel: view === 'working' || view === 'list',
+      showSteps: view === 'working',
+      steps: stepTexts.map((t, i) => ({ text: t, done: i < stepIdx, current: i === stepIdx, color: i <= stepIdx ? '#1E2421' : '#A3ADA8' })),
+      showList: view === 'list' && !editing,
+      isEditing: view === 'list' && editing,
+      askList: () => runSteps(['A ler o email', 'A perceber o pedido', 'A procurar a informação nas fontes a que tenho acesso'], { view: 'list', hadList: true, crit: BASE.map((c) => Object.assign({}, c, { done: false, ai: false, user: false })), values: {} }),
+      cancel: () => { clearTimeout(this._t); this.setState({ view: hadList ? 'list' : 'ready' }); },
+      decline: () => this.setState({ view: 'declined' }),
+      reopen: () => this.setState({ view: hadList ? 'list' : 'ready' }),
+      hide: () => { clearTimeout(this._t); this.setState({ view: 'declined' }); },
+      summaryLine: anyAI ? 'Escrevi os pontos que estavam por marcar' : 'Li o email e preparei esta lista',
+      stepsOpen,
+      stepsOpenStr: String(stepsOpen),
+      stepsToggleText: stepsOpen ? 'Esconder passos' : 'Ver passos',
+      toggleSteps: () => this.setState({ stepsOpen: !stepsOpen }),
+      totalNeeds,
+      ruleHint: anyAI ? 'Marque cada ponto quando estiver satisfeito com o texto.' : 'Marque os pontos que já tratou. O assistente só escreve os que ficarem por marcar.',
+      doneCount,
+      total,
+      crit: critRows,
+      outsideDone,
+      outsideAria: String(outsideDone),
+      outsideRing: outsideDone ? '#2F8A63' : '#9DB5AA',
+      outsideFill: outsideDone ? '#2F8A63' : '#FFFFFF',
+      outsideColor: outsideDone ? '#5F6F68' : '#1E2421',
+      toggleOutside: () => this.setState({ outsideDone: !outsideDone }),
+      hasText: paras.length > 0,
+      noText: paras.length === 0,
+      paras,
+      hasMessage: message !== '',
+      message,
+      messageColor,
+      canGenerate: toWrite.length > 0,
+      generateLabel: toWrite.length === total ? 'Gerar resposta' : 'Gerar o que falta (' + toWrite.length + ')',
+      generate: () => { const ids = toWrite.map((c) => c.id); runSteps(['A juntar a lista e a informação que me deu', 'A escrever os pontos por marcar'], generateAfter(ids)); },
+      hasAI: anyAI,
+      noAI: !anyAI,
+      regenerate: () => runSteps(['A escrever outra versão'], { view: 'list' }),
+      removeAI: () => this.setState({ crit: crit.map((x) => x.ai ? Object.assign({}, x, { ai: false, done: false }) : x) }),
+      startEdit: () => this.setState({ editing: true, snapshot: crit }),
+      finishEdit: () => this.setState({ editing: false }),
+      cancelEdit: () => this.setState({ editing: false, crit: snapshot }),
+      editRows: crit.map((c) => ({
+        inputId: 'edit-' + c.id,
+        text: c.title + ': ' + c.desc,
+        onText: (e) => {
+          const v = e.target.value;
+          const i = v.indexOf(':');
+          const patch = i >= 0 ? { title: v.slice(0, i).trim(), desc: v.slice(i + 1).trim() } : { title: v.trim(), desc: '' };
+          this.setState({ crit: upd(c.id, patch) });
+        },
+        remove: () => this.setState({ crit: crit.filter((x) => x.id !== c.id) })
+      })),
+      newText,
+      onNewText: (e) => this.setState({ newText: e.target.value }),
+      addCrit: (e) => {
+        e.preventDefault();
+        const v = newText.trim();
+        if (!v) return;
+        const i = v.indexOf(':');
+        const item = i >= 0 ? { title: v.slice(0, i).trim(), desc: v.slice(i + 1).trim() } : { title: v, desc: '' };
+        this.setState({ newText: '', crit: crit.concat([Object.assign({ id: 'n' + Date.now(), needs: [], done: false, ai: false, user: false }, item)]) });
+      },
+      always,
+      toggleAlways: () => this.setState({ always: !always })
+    };
+  }
+}
+</script>
+</body>
+</html>
