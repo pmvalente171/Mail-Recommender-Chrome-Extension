@@ -244,11 +244,12 @@ button{font-family:inherit;cursor:pointer}
 `
 
 // Page-level styles: the font, and the anchor for our host element.
-const PANEL_WIDTH = 400
-const PANEL_HEIGHT = 560
-const PANEL_MIN_HEIGHT = 320
+const PANEL_WIDTH = 440
+const PANEL_HEIGHT = 640 // at most; less if the window is shorter
+const PANEL_MIN_HEIGHT = 360
 const PANEL_GAP = 16
 const TOOLBAR_FALLBACK = 64 // if Gmail's formatting toolbar can't be found
+const REPLY_HEADER = 80 // Gmail's "Para" line above the reply body
 const NARROW_BELOW = 820 // reply body narrower than this: panel goes above the text
 
 function injectPageStyles() {
@@ -294,7 +295,14 @@ function showGuide() {
     <li><span class="num">1</span><span>Clique em <strong>Preparar a lista</strong>. O assistente diz o que percebeu do pedido e o que a resposta deve tratar.</span></li>
     <li><span class="num">2</span><span>Marque os pontos que já tratou. Se faltar informação, preencha-a ou deixe em branco.</span></li>
     <li><span class="num">3</span><span>Se quiser, clique em <strong>Gerar o que falta</strong>: o assistente só escreve os pontos por marcar. Leia o texto e marque cada ponto. <strong>Nada é enviado sem si.</strong></span></li>
-    </ol><div><button class="btn-primary" data-a="closeGuide">Percebi</button></div></div>`
+    </ol>
+    <label class="persist"><input type="checkbox" ${prefs.prepareAlways ? 'checked' : ''} data-a="toggleAlways">Preparar esta lista sempre que abro uma resposta (fica guardado)</label>
+    <div><button class="btn-primary" data-a="closeGuide">Percebi</button></div></div>`
+  // "Preparar sempre" lives here rather than in the panel footer, which it
+  // crowded (HANDOFF.md open issue 10).
+  root.addEventListener('change', (e) => {
+    if (e.target.dataset.a === 'toggleAlways') savePref('prepareAlways', e.target.checked)
+  })
   root.addEventListener('click', (e) => { if (e.target.closest('[data-a="closeGuide"]')) closeGuide() })
   root.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeGuide() })
   document.body.appendChild(guideHost)
@@ -411,9 +419,10 @@ function createAssistant(replyBox) {
     }
   }
 
-  // Gmail's reply body is a scroll area with the formatting toolbar floating
-  // over its bottom edge. Fit the side panel between the top of the editable
-  // and that toolbar, so its footer buttons are never hidden underneath.
+  // The conversation is a scroll area, and when the reply is taller than it,
+  // Gmail's formatting toolbar sticks to its bottom edge. Size the side panel
+  // so that, with the reply scrolled into view, the panel fits between the
+  // reply header and that toolbar and its footer buttons are never hidden.
   const scroller = (() => {
     for (let n = parent.parentElement; n; n = n.parentElement) {
       if (/(auto|scroll)/.test(getComputedStyle(n).overflowY)) return n
@@ -424,14 +433,11 @@ function createAssistant(replyBox) {
   function sidePanelHeight() {
     if (!scroller) return PANEL_HEIGHT
     const box = scroller.getBoundingClientRect()
-    // Top of the editable in the scroller's content coordinates, so the
-    // result doesn't change as the reply body scrolls.
-    const top = replyBox.getBoundingClientRect().top - box.top + scroller.scrollTop
     const toolbar = [...scroller.querySelectorAll('[role="toolbar"]')]
       .map((t) => t.getBoundingClientRect())
       .find((r) => r.height > 0 && r.top < box.bottom && r.bottom > box.top)
     const covered = toolbar ? box.bottom - toolbar.top : TOOLBAR_FALLBACK
-    const available = scroller.clientHeight - top - covered - PANEL_GAP
+    const available = scroller.clientHeight - covered - REPLY_HEADER - PANEL_GAP
     return Math.max(PANEL_MIN_HEIGHT, Math.min(PANEL_HEIGHT, Math.round(available)))
   }
 
@@ -539,7 +545,7 @@ function createAssistant(replyBox) {
     h += `<div class="panel-foot">${msg ? `<span class="message ${warn ? 'warn' : ''}">${msg}</span>` : ''}<div class="row">
       ${toWrite.length ? `<button class="btn-primary" data-a="generate">${SPARK(15)} ${toWrite.length === S.points.length ? 'Gerar resposta' : `Gerar o que falta (${toWrite.length})`}</button>` : ''}
       ${anyAI ? `<button class="btn-secondary" data-a="regenerate">Gerar outra versão</button><button class="link muted" data-a="removeAI">Retirar texto do assistente</button>` : `<button class="link" data-a="startEdit">Editar lista</button>`}
-      </div><label class="persist"><input type="checkbox" id="always" ${prefs.prepareAlways ? 'checked' : ''} data-a="toggleAlways">Preparar esta lista sempre que abro uma resposta (fica guardado)</label></div></aside>`
+      </div></div></aside>`
     return h
   }
 
@@ -575,12 +581,6 @@ function createAssistant(replyBox) {
     const el = e.target.closest('[data-a]')
     if (!el || el.tagName === 'INPUT') return
     if (actions[el.dataset.a]) actions[el.dataset.a](el)
-  })
-  root.addEventListener('change', (e) => {
-    if (e.target.dataset.a === 'toggleAlways') {
-      savePref('prepareAlways', e.target.checked)
-      render()
-    }
   })
   root.addEventListener('input', (e) => {
     const t = e.target
