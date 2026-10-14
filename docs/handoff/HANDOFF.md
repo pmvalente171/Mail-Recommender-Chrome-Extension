@@ -272,3 +272,33 @@ Each step is testable on its own.
 ## 13. Notes on the example content
 
 The example email is about a parent asking whether the "Licenciatura em Análise e Engenharia de Dados" has places in 2026/27. The values in the prototype's demo states ("30", "Matemática A", "100", the dates) are **invented**. They stand in for what a staff member would type. Never ship them, and never let the model invent such facts: they must come from a source or from the person.
+
+## 14. Changes after the first build
+
+These decisions were made while building and testing in Gmail. Where they conflict with sections 2 to 10, this section wins.
+
+### 14.1 Who handles each point (replaces ticking to skip)
+
+Testing showed the round check was not intuitive: it meant both "this point is dealt with" and "the assistant should not write this", so staff had to tick a point before dealing with it just to keep the AI away from it (open issue 3). Following Cocoa (Feng et al., CHI '26, `documents/COCOA.pdf`), the two meanings are now separate controls:
+
+- **Owner toggle** on each point: you or the assistant (user and robot icons, `role="switch"`). `POST /list` suggests an owner per point (`"owner": "ai" | "user"`, default `"user"`); the person can switch it at any time until the assistant has written that point. Tasks outside the email are always the person's and have no toggle.
+- **Status icon**, shown and never clicked: • to do; spinner while writing; amber **?** when an assistant point is missing information; dashed circle when the assistant has written it and it waits for the person; ✓ done.
+- **The person's actions** are explicit buttons: **Feito** on their own points, **Confirmar** on assistant-written points, **Desfazer** to undo either.
+- A **↳ line** under each point says what happened ("Fica para o assistente", "Escrito pelo assistente · leia o texto e confirme", "Tratado por si", …).
+
+What this changes in the rules:
+
+- **Rule 3** still holds in spirit: only the person marks a point done. The assistant never does, including after writing it; its points stop at "leia o texto e confirme".
+- **Rule 4** becomes: generation writes the points **assigned to the assistant** that it has not written yet and that are not done. The button reads **Gerar os pontos do assistente (N)**.
+- **Section 6, "Another version"**: rewrites the assistant's points the person has not confirmed yet.
+- **Section 7**: `Point` gains `owner: 'ai' | 'user'` and `writing: boolean`.
+- **Section 5.4**: generating no longer replaces the list with progress steps; the points being written show a spinner in place, with **Cancelar** in the footer. Preparing the list still uses the progress steps.
+- **Missing-information fields** show under the assistant's points only, since their values fill its text. On the person's own points the ↳ line lists what was not found.
+- **Study events** (section 9): add `owner_changed` with `point`, `to` (`ai`/`user`) and `suggested` (the backend's suggestion); `point_ticked`/`point_unticked` become `point_done`/`point_undone`.
+
+### 14.2 Placement and layout
+
+- The side panel's space is made with `padding-right` on the reply body's **parent** element; Gmail sizes the editable at 100% of its parent, so padding on the editable itself overflows and gets clipped.
+- The panel is 440 px wide and as tall as the visible conversation area allows above Gmail's formatting toolbar (360–640 px). Narrower than 820 px, it goes above the text.
+- "Preparar esta lista sempre que abro uma resposta" moved from the panel footer into "Como funciona" (open issue 10, done).
+- The small in-row buttons (Feito, Confirmar, Desfazer) and the owner toggle are 34 px high, below the 40–44 px target in section 8, to fit the panel. Revisit if testing shows they are hard to hit.

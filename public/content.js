@@ -116,9 +116,12 @@ async function requestList(replyBox) {
 function normalizeList(list) {
   return {
     request: list.request_summary || '',
+    // owner: who the backend suggests should handle the point; the person can
+    // switch it. Without a suggestion the point is the person's.
     points: (list.points || []).map((p, i) => ({
       id: String(p.id || `p${i}`), title: p.title || '', desc: p.desc || '',
-      needs: p.needs || [], done: false, ai: false
+      needs: p.needs || [], owner: p.owner === 'ai' ? 'ai' : 'user',
+      done: false, ai: false, writing: false
     })),
     outside: (list.outside || []).map((o, i) => ({ id: String(o.id || `o${i}`), text: o.text || '', done: false })),
     steps: list.steps || [],
@@ -127,9 +130,8 @@ function normalizeList(list) {
 }
 
 const STEPS_LIST = ['A ler o email', 'A perceber o pedido', 'A procurar a informação nas fontes a que tenho acesso']
-const STEPS_GENERATE = ['A juntar a lista e a informação que me deu', 'A escrever os pontos por marcar']
-const STEPS_REGENERATE = ['A escrever outra versão']
 const STEP_DELAY_MS = 650
+const MOCK_WRITE_MS = 1800 // stand-in for POST /generate until build step 5
 
 // Short plain messages for failures (HANDOFF.md open issue 8).
 function errorMessage(err) {
@@ -157,7 +159,7 @@ const UI_CSS = `
   --green-900:#173F33; --green-700:#1F5C4A; --green-600:#2F8A63; --green-300:#8FB3A3;
   --green-200:#A9C9BB; --green-100:#EAF3EF; --green-50:#F2F7F4; --panel-line:#E3EBE7; --panel-border:#C9D8D0;
   --ink:#1E2421; --ink-2:#3D4F48; --ink-3:#5F6F68; --ink-4:#80868B;
-  --amber-text:#6B4E00; --amber-field:#FFFBEF; --amber-field-line:#E2C76E;
+  --amber-line:#B8921C; --amber-text:#6B4E00; --amber-field:#FFFBEF; --amber-field-line:#E2C76E;
   --danger-line:#E3B4B4; --danger-ink:#8A2C2C;
   --font-ui:'Public Sans DALM','Helvetica Neue',Arial,sans-serif;
   --font-mail:Arial,Helvetica,sans-serif}
@@ -203,24 +205,37 @@ button{font-family:inherit;cursor:pointer}
 .section-head strong{flex:1 1 auto;font-size:14px}
 .section-head span{font-size:12.5px;font-weight:600;color:var(--ink-2);white-space:nowrap}
 .hint{font-size:12.5px;color:var(--ink-3)}
-.crit{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px}
-.crit li{display:flex;gap:10px;align-items:flex-start;padding:6px;margin:0 -6px;border-radius:10px}
-.crit li.review{background:#EEF6F1}
-.check{flex:0 0 auto;width:26px;height:26px;padding:0;border-radius:50%;border:2px solid #9DB5AA;background:#fff;color:#fff;display:flex;align-items:center;justify-content:center}
-.check.ai{border-color:var(--green-700)}
-.check[aria-checked="true"]{border-color:var(--green-600);background:var(--green-600)}
-.crit-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:5px}
-.crit-text{font-size:14px;line-height:1.45}
-.crit-text.done{color:var(--ink-3)}
-.status{font-size:12px;font-weight:600;color:var(--ink-3)}
-.status.review{color:var(--green-700)}
+.legend{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.crit{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:12px}
+.crit li{display:flex;gap:8px;align-items:flex-start}
+.state{flex:0 0 auto;width:22px;height:22px;margin-top:9px;display:flex;align-items:center;justify-content:center;color:var(--ink-4)}
+.state .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
+.state.done{color:var(--green-600)}
+.state.ask{color:var(--amber-line)}
+.state .ring{width:15px;height:15px;border:2px dashed var(--green-700);border-radius:50%}
+.state .spin{width:15px;height:15px;border:2px solid var(--green-200);border-top-color:var(--green-700);border-radius:50%;animation:dalm-spin .8s linear infinite}
+@keyframes dalm-spin{to{transform:rotate(360deg)}}
+.crit-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:6px}
+.card{padding:8px 10px;border-radius:8px;background:#F3F5F4;font-size:14px;line-height:1.45}
+.card.ai{background:var(--green-50);box-shadow:inset 0 0 0 1px var(--green-100)}
+.card.ask{background:#FFF7DD;box-shadow:inset 0 0 0 1px #F1DE9C}
+.card.done{color:var(--ink-3)}
+.out{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-3)}
+.out.review{color:var(--green-700);font-weight:600}
+.out.ask{color:var(--amber-text);font-weight:600}
+.act{font-size:12.5px;font-weight:600;min-height:34px;padding:0 12px;border-radius:17px;border:1px solid var(--green-300);background:#fff;color:var(--green-700)}
+.act.primary{background:var(--green-700);border-color:var(--green-700);color:#fff}
+.owner{flex:0 0 auto;margin-top:4px;display:inline-flex;padding:2px;border-radius:18px;border:1px solid var(--panel-border);background:#fff}
+.owner span{width:30px;height:30px;border-radius:15px;display:flex;align-items:center;justify-content:center;color:var(--ink-4)}
+.owner[aria-checked="true"] .side-ai,.owner[aria-checked="false"] .side-user{background:var(--green-700);color:#fff}
+.owner:disabled{cursor:default;opacity:.6}
+.owner.fixed{border-color:transparent;background:transparent}
+.owner.fixed .side-user{background:var(--green-50);color:var(--green-700)}
 .field{display:flex;align-items:center;gap:8px}
 .field label{flex:0 0 auto;width:118px;font-size:12.5px;color:var(--amber-text)}
 .field input,.edit input{flex:1 1 auto;min-width:0;font:inherit;font-size:13.5px;padding:0 10px;min-height:34px;border:1px solid var(--amber-field-line);border-radius:8px;background:var(--amber-field);color:var(--ink)}
 .field input.filled{border-color:#C4CDC8;background:#fff}
-.outside{display:flex;gap:10px;align-items:flex-start}
-.outside span{font-size:14px;line-height:1.45}
-.outside span.done{color:var(--ink-3)}
+@media (prefers-reduced-motion: reduce){.state .spin{animation-duration:3s}}
 .message{font-size:13px;font-weight:600;color:var(--green-700)}
 .message.warn{color:var(--amber-text)}
 .persist{display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--ink-3)}
@@ -280,6 +295,16 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 const SPARK = (s) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.8 4.7 4.7 1.8-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/></svg>`
 const TICK = (s, color, w) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`
 
+// Inlined from public/icons/*.svg (edit those, then copy the shapes here), so
+// they take the panel's colours through currentColor.
+const ICON_SHAPES = {
+  check: '<path d="M4.5 12.5l5 5L19.5 7"/>',
+  question: '<path d="M8.5 8a3.5 3.5 0 1 1 5.25 3.03C12.7 11.63 12 12.4 12 13.6v1.4"/><circle cx="12" cy="19.5" r="1.25" fill="currentColor" stroke="none"/>',
+  robot: '<path d="M12 8V5.5"/><circle cx="12" cy="3.5" r="1.5"/><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M2 12.5v3"/><path d="M22 12.5v3"/><circle cx="9" cy="13" r="1.25" fill="currentColor" stroke="none"/><circle cx="15" cy="13" r="1.25" fill="currentColor" stroke="none"/><path d="M10 16.5h4"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>'
+}
+const ICON = (name, s) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_SHAPES[name]}</svg>`
+
 // --- First-use guide (one per page) -----------------------------------------
 let guideHost = null
 
@@ -293,8 +318,8 @@ function showGuide() {
     <div class="root guide" role="dialog" aria-label="Como funciona o Assistente DALM"><span class="eyebrow">Assistente DALM · opcional</span>
     <strong>Uma ajuda para não esquecer nada nas respostas</strong><ol>
     <li><span class="num">1</span><span>Clique em <strong>Preparar a lista</strong>. O assistente diz o que percebeu do pedido e o que a resposta deve tratar.</span></li>
-    <li><span class="num">2</span><span>Marque os pontos que já tratou. Se faltar informação, preencha-a ou deixe em branco.</span></li>
-    <li><span class="num">3</span><span>Se quiser, clique em <strong>Gerar o que falta</strong>: o assistente só escreve os pontos por marcar. Leia o texto e marque cada ponto. <strong>Nada é enviado sem si.</strong></span></li>
+    <li><span class="num">2</span><span>Escolha quem trata cada ponto: você ${ICON('user', 15)} ou o assistente ${ICON('robot', 15)}. Se faltar informação, preencha-a ou deixe em branco.</span></li>
+    <li><span class="num">3</span><span>Se quiser, clique em <strong>Gerar os pontos do assistente</strong>: ele só escreve os pontos que lhe deu. Leia o texto e confirme cada um. <strong>Nada é enviado sem si.</strong></span></li>
     </ol>
     <label class="persist"><input type="checkbox" ${prefs.prepareAlways ? 'checked' : ''} data-a="toggleAlways">Preparar esta lista sempre que abro uma resposta (fica guardado)</label>
     <div><button class="btn-primary" data-a="closeGuide">Percebi</button></div></div>`
@@ -497,7 +522,9 @@ function createAssistant(replyBox) {
     }
 
     const anyAI = S.points.some((p) => p.ai)
-    const toWrite = S.points.filter((p) => !p.done && !p.ai)
+    const writing = S.points.some((p) => p.writing)
+    const toWrite = S.points.filter((p) => p.owner === 'ai' && !p.ai && !p.done && !p.writing)
+    const regenerable = S.points.filter((p) => p.ai && !p.done)
     const doneCount = S.points.filter((p) => p.done).length
     const totalNeeds = S.points.reduce((n, p) => n + p.needs.length, 0)
     const stepItems = S.steps.map((s) => `<li>${esc(s)}</li>`)
@@ -506,51 +533,125 @@ function createAssistant(replyBox) {
 
     h += `<div class="panel-body">
       <div style="display:flex;flex-direction:column;gap:6px">
-        <div class="summary">${TICK(15, '#5F8F7C', 2.6)}<span>${anyAI ? 'Escrevi os pontos que estavam por marcar' : 'Li o email e preparei esta lista'}</span>
+        <div class="summary">${TICK(15, '#5F8F7C', 2.6)}<span>${anyAI ? 'Escrevi os pontos que me deu' : 'Li o email e preparei esta lista'}</span>
         <button class="link" aria-expanded="${S.stepsOpen}" data-a="toggleSteps">${S.stepsOpen ? 'Esconder passos' : 'Ver passos'}</button></div>
         ${S.stepsOpen ? `<ul class="steplist">${stepItems.join('')}</ul>` : ''}
       </div>
       <p class="request"><strong>O pedido:</strong> ${esc(S.request)}</p>
       <div class="section">
-        <div class="section-head"><strong>A resposta deve tratar:</strong><span>${doneCount} de ${S.points.length} tratados</span></div>
-        <span class="hint">${anyAI ? 'Marque cada ponto quando estiver satisfeito com o texto.' : 'Marque os pontos que já tratou. O assistente só escreve os que ficarem por marcar.'}</span>
-        <ul class="crit">` + S.points.map((p) => {
-          const missing = p.needs.filter((n) => !has(n.key))
-          let status = ''
-          let cls = ''
-          if (p.ai && !p.done) { status = 'Escrito pelo assistente · leia o texto e marque'; cls = 'review' }
-          else if (p.ai && p.done) status = 'Escrito pelo assistente · revisto por si'
-          else if (p.done) status = 'Tratado por si'
-          const showFields = !p.done || missing.length > 0
-          return `<li class="${p.ai && !p.done ? 'review' : ''}">
-            <button class="check ${p.ai ? 'ai' : ''}" role="checkbox" aria-checked="${p.done}" aria-label="Marcar «${esc(p.title)}» como tratado" data-a="toggle" data-id="${p.id}">${p.done ? TICK(14, 'currentColor', 3) : ''}</button>
-            <div class="crit-main"><span class="crit-text ${p.done ? 'done' : ''}"><strong>${esc(p.title)}</strong>: ${esc(p.desc)}</span>
-            ${status ? `<span class="status ${cls}">${status}</span>` : ''}
-            ${showFields ? p.needs.map((n) => `<div class="field"><label for="need-${n.key}">${esc(n.label)}</label><input id="need-${n.key}" class="${has(n.key) ? 'filled' : ''}" placeholder="não encontrei" value="${esc(S.values[n.key] || '')}" data-key="${n.key}"></div>`).join('') : ''}
-            </div></li>`
-        }).join('') + `</ul></div>
-      ${S.outside.length ? `<div style="display:flex;flex-direction:column;gap:6px"><strong style="font-size:14px">Fora do email, faz você:</strong>
-        ${S.outside.map((o) => `<div class="outside"><button class="check" role="checkbox" aria-checked="${o.done}" aria-label="Marcar como feito: ${esc(o.text)}" data-a="toggleOutside" data-id="${o.id}">${o.done ? TICK(14, 'currentColor', 3) : ''}</button><span class="${o.done ? 'done' : ''}">${esc(o.text)}</span></div>`).join('')}
-      </div>` : ''}</div>`
+        <div class="section-head"><strong>A resposta deve tratar:</strong><span>${doneCount} de ${S.points.length} feitos</span></div>
+        <span class="hint">${anyAI ? 'Leia o texto do assistente e confirme cada ponto.' : `Escolha quem trata cada ponto: <span class="legend">${ICON('user', 14)} você</span> ou <span class="legend">${ICON('robot', 14)} o assistente</span>.`}</span>
+        <ul class="crit">${S.points.map(renderPoint).join('')}</ul></div>
+      ${S.outside.length ? `<div class="section"><strong style="font-size:14px">Fora do email, faz você:</strong>
+        <ul class="crit">${S.outside.map(renderOutside).join('')}</ul></div>` : ''}</div>`
 
     const missingInText = S.points.filter((p) => p.ai).reduce((n, p) => n + p.needs.filter((x) => !has(x.key)).length, 0)
     const unreviewed = S.points.filter((p) => p.ai && !p.done).length
     const outsideDone = S.outside.every((o) => o.done)
     let msg = ''
     let warn = false
-    if (missingInText > 0) { msg = missingInText === 1 ? 'Falta 1 informação, a amarelo no texto.' : `Faltam ${missingInText} informações, a amarelo no texto.`; warn = true }
-    else if (unreviewed > 0) msg = 'Leia o texto do assistente e marque cada ponto.'
+    if (writing) msg = 'A escrever os pontos do assistente…'
+    else if (missingInText > 0) { msg = missingInText === 1 ? 'Falta 1 informação, a amarelo no texto.' : `Faltam ${missingInText} informações, a amarelo no texto.`; warn = true }
+    else if (unreviewed > 0) msg = 'Leia o texto do assistente e confirme cada ponto.'
     else if (doneCount === S.points.length && S.points.length) msg = outsideDone ? 'Tudo tratado. Envie quando quiser.' : 'Resposta tratada. Falta a tarefa fora do email.'
 
-    h += `<div class="panel-foot">${msg ? `<span class="message ${warn ? 'warn' : ''}">${msg}</span>` : ''}<div class="row">
-      ${toWrite.length ? `<button class="btn-primary" data-a="generate">${SPARK(15)} ${toWrite.length === S.points.length ? 'Gerar resposta' : `Gerar o que falta (${toWrite.length})`}</button>` : ''}
-      ${anyAI ? `<button class="btn-secondary" data-a="regenerate">Gerar outra versão</button><button class="link muted" data-a="removeAI">Retirar texto do assistente</button>` : `<button class="link" data-a="startEdit">Editar lista</button>`}
-      </div></div></aside>`
+    const buttons = writing
+      ? '<button class="btn-secondary" data-a="cancelWriting">Cancelar</button>'
+      : (toWrite.length ? `<button class="btn-primary" data-a="generate">${SPARK(15)} Gerar os pontos do assistente (${toWrite.length})</button>` : '') +
+        (regenerable.length ? '<button class="btn-secondary" data-a="regenerate">Gerar outra versão</button>' : '') +
+        (anyAI ? '<button class="link muted" data-a="removeAI">Retirar texto do assistente</button>' : '<button class="link" data-a="startEdit">Editar lista</button>')
+
+    h += `<div class="panel-foot">${msg ? `<span class="message ${warn ? 'warn' : ''}" role="status">${msg}</span>` : ''}<div class="row">${buttons}</div></div></aside>`
     return h
   }
 
-  // Generating only flags points in the panel for now; calling /generate and
-  // inserting the text into the email is build step 5.
+  // Where a point is at. This is shown, never clicked: the person changes it
+  // through the owner toggle and the Feito / Confirmar / Desfazer buttons.
+  function pointState(p) {
+    if (p.writing) return 'writing'
+    if (p.done) return 'done'
+    if (p.ai) return 'review'
+    if (p.owner === 'ai' && p.needs.some((n) => !has(n.key))) return 'ask'
+    return 'todo'
+  }
+
+  const STATE_ICON = {
+    todo: '<span class="dot"></span>',
+    writing: '<span class="spin"></span>',
+    ask: ICON('question', 18),
+    review: '<span class="ring"></span>',
+    done: ICON('check', 18)
+  }
+  const STATE_LABEL = { todo: 'Por fazer', writing: 'A escrever', ask: 'Falta informação', review: 'Escrito, por confirmar', done: 'Feito' }
+
+  const actionButton = (action, label, title, id, kind, primary) =>
+    `<button class="act ${primary ? 'primary' : ''}" data-a="${action}" data-id="${id}" data-kind="${kind}" aria-label="${label} «${esc(title)}»">${label}</button>`
+
+  function renderPoint(p) {
+    const state = pointState(p)
+    const isAI = p.owner === 'ai'
+    const missing = p.needs.filter((n) => !has(n.key))
+    let out = ''
+    let outCls = ''
+    let action = ''
+    if (state === 'writing') out = 'A escrever…'
+    else if (state === 'done') { out = p.ai ? 'Escrito pelo assistente · revisto por si' : 'Tratado por si'; action = actionButton('undoDone', 'Desfazer', p.title, p.id, 'point') }
+    else if (state === 'review') { out = 'Escrito pelo assistente · leia o texto e confirme'; outCls = 'review'; action = actionButton('markDone', 'Confirmar', p.title, p.id, 'point', true) }
+    else if (state === 'ask') { out = 'Falta informação · preencha-a ou deixe em branco'; outCls = 'ask' }
+    else if (isAI) out = 'Fica para o assistente'
+    else { out = 'Fica para si · escreva-o no email'; action = actionButton('markDone', 'Feito', p.title, p.id, 'point') }
+    // The values fill the assistant's text, so the fields belong to its
+    // points; for the person's own points just say what wasn't found.
+    if (!isAI && !p.done && missing.length) out += ` · não encontrei: ${missing.map((n) => esc(n.label)).join(', ')}`
+    const showFields = isAI && p.needs.length && !(p.done && !missing.length)
+    const locked = p.ai || p.writing || p.done
+    const owner = isAI ? 'o assistente' : 'você'
+    const cardCls = state === 'ask' ? 'ask' : isAI ? 'ai' : ''
+    return `<li>
+      <span class="state ${state}" role="img" aria-label="${STATE_LABEL[state]}">${STATE_ICON[state]}</span>
+      <div class="crit-main">
+        <div class="card ${cardCls} ${p.done ? 'done' : ''}"><strong>${esc(p.title)}</strong>: ${esc(p.desc)}</div>
+        <div class="out ${outCls}"><span>↳ ${out}</span>${action}</div>
+        ${showFields ? p.needs.map((n) => `<div class="field"><label for="need-${n.key}">${esc(n.label)}</label><input id="need-${n.key}" class="${has(n.key) ? 'filled' : ''}" placeholder="não encontrei" value="${esc(S.values[n.key] || '')}" data-key="${n.key}"></div>`).join('') : ''}
+      </div>
+      <button class="owner" role="switch" aria-checked="${isAI}" aria-label="Quem trata «${esc(p.title)}»: ${owner}" title="Trata: ${owner}${locked ? ' (desfaça ou retire o texto para mudar)' : ''}" data-a="toggleOwner" data-id="${p.id}" ${locked ? 'disabled' : ''}><span class="side-user">${ICON('user', 16)}</span><span class="side-ai">${ICON('robot', 16)}</span></button>
+    </li>`
+  }
+
+  // Tasks outside the email are always the person's: no toggle, no AI.
+  function renderOutside(o) {
+    const state = o.done ? 'done' : 'todo'
+    return `<li>
+      <span class="state ${state}" role="img" aria-label="${STATE_LABEL[state]}">${STATE_ICON[state]}</span>
+      <div class="crit-main">
+        <div class="card ${o.done ? 'done' : ''}">${esc(o.text)}</div>
+        <div class="out"><span>↳ ${o.done ? 'Feito por si' : 'Fica para si'}</span>${o.done ? actionButton('undoDone', 'Desfazer', o.text, o.id, 'outside') : actionButton('markDone', 'Feito', o.text, o.id, 'outside')}</div>
+      </div>
+      <span class="owner fixed" title="Só você pode tratar isto"><span class="side-user">${ICON('user', 16)}</span></span>
+    </li>`
+  }
+
+  function updateItem(el, patch) {
+    const key = el.dataset.kind === 'outside' ? 'outside' : 'points'
+    set({ [key]: S[key].map((x) => x.id === el.dataset.id ? { ...x, ...(typeof patch === 'function' ? patch(x) : patch) } : x) })
+  }
+
+  // Marks the points as being written, then as written by the assistant
+  // (never as done: only the person confirms). Calling /generate and putting
+  // the text into the email is build step 5; for now this is simulated.
+  function writePoints(ids) {
+    if (!ids.length) return
+    clearTimeout(timer)
+    const token = ++workToken
+    set({ points: S.points.map((p) => ids.includes(p.id) ? { ...p, writing: true } : p) })
+    timer = setTimeout(() => {
+      if (token !== workToken) return
+      set({ points: S.points.map((p) => ids.includes(p.id) ? { ...p, writing: false, ai: true, done: false } : p) })
+    }, MOCK_WRITE_MS)
+  }
+
+  const stopWriting = () => S.points.map((p) => p.writing ? { ...p, writing: false } : p)
+
   const actions = {
     // Explicit click (or the opt-in "Preparar sempre"): the only point where
     // the thread is read and sent.
@@ -558,18 +659,18 @@ function createAssistant(replyBox) {
       (list) => ({ view: 'list', hadList: true, ...normalizeList(list), values: {}, stepsOpen: false }), 'askList'),
     decline: () => set({ view: 'declined' }),
     reopen: () => set({ view: S.hadList ? 'list' : 'ready' }),
-    hide: () => { stopWork(); set({ view: 'declined' }) },
+    hide: () => { stopWork(); set({ view: 'declined', points: stopWriting() }) },
     cancel: () => { stopWork(); set({ view: S.hadList ? 'list' : 'ready', error: null }) },
     retry: () => S.retry && actions[S.retry](),
     openHelp: () => showGuide(),
     toggleSteps: () => set({ stepsOpen: !S.stepsOpen }),
-    toggle: (el) => set({ points: S.points.map((p) => p.id === el.dataset.id ? { ...p, done: !p.done } : p) }),
-    toggleOutside: (el) => set({ outside: S.outside.map((o) => o.id === el.dataset.id ? { ...o, done: !o.done } : o) }),
-    generate: () => {
-      const ids = S.points.filter((p) => !p.done && !p.ai).map((p) => p.id)
-      runWork(STEPS_GENERATE, Promise.resolve(), () => ({ view: 'list', points: S.points.map((p) => ids.includes(p.id) ? { ...p, ai: true } : p) }), 'generate')
-    },
-    regenerate: () => runWork(STEPS_REGENERATE, Promise.resolve(), () => ({ view: 'list' }), 'regenerate'),
+    toggleOwner: (el) => updateItem(el, (p) => ({ owner: p.owner === 'ai' ? 'user' : 'ai' })),
+    markDone: (el) => updateItem(el, { done: true }),
+    undoDone: (el) => updateItem(el, { done: false }),
+    generate: () => writePoints(S.points.filter((p) => p.owner === 'ai' && !p.ai && !p.done && !p.writing).map((p) => p.id)),
+    // Rewrites the assistant's points the person hasn't confirmed yet.
+    regenerate: () => writePoints(S.points.filter((p) => p.ai && !p.done).map((p) => p.id)),
+    cancelWriting: () => { stopWork(); set({ points: stopWriting() }) },
     removeAI: () => set({ points: S.points.map((p) => p.ai ? { ...p, ai: false, done: false } : p) }),
     startEdit: () => set({ editing: true, snapshot: S.points }),
     finishEdit: () => set({ editing: false }),
@@ -598,7 +699,7 @@ function createAssistant(replyBox) {
     if (!v) return
     const i = v.indexOf(':')
     const item = i >= 0 ? { title: v.slice(0, i).trim(), desc: v.slice(i + 1).trim() } : { title: v, desc: '' }
-    set({ newText: '', points: S.points.concat([{ id: 'n' + Date.now(), needs: [], done: false, ai: false, ...item }]) })
+    set({ newText: '', points: S.points.concat([{ id: 'n' + Date.now(), needs: [], owner: 'user', done: false, ai: false, writing: false, ...item }]) })
   })
 
   // Typing in the reply collapses the ready bar into "Mostrar assistente".

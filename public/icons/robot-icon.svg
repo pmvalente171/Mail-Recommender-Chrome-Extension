@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+  <!-- antenna -->
+  <path d="M12 8V5.5"/>
+  <circle cx="12" cy="3.5" r="1.5"/>
+  <!-- head -->
+  <rect x="4" y="8" width="16" height="12" rx="3"/>
+  <!-- side ears -->
+  <path d="M2 12.5v3"/>
+  <path d="M22 12.5v3"/>
+  <!-- eyes -->
+  <circle cx="9" cy="13" r="1.25" fill="currentColor" stroke="none"/>
+  <circle cx="15" cy="13" r="1.25" fill="currentColor" stroke="none"/>
+  <!-- mouth -->
+  <path d="M10 16.5h4"/>
+</svg>
