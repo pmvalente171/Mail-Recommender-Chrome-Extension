@@ -7,7 +7,7 @@ const RECOMMEND_ENDPOINT = "http://localhost:4000/recommend"
 // Put a keyword in the draft to pick the outcome: !out (out of scope),
 // !error (backend failure), !long (multi-paragraph reply). Anything else
 // gets a short reply that echoes the start of the text that would be sent.
-const MOCK_MODE = true
+const MOCK_MODE = false
 const MOCK_DELAY_MS = 2000
 
 function injectSpinnerStyle() {
