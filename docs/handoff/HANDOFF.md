@@ -298,7 +298,10 @@ What this changes in the rules:
 
 ### 14.2 Placement and layout
 
-- The side panel's space is made with `padding-right` on the reply body's **parent** element; Gmail sizes the editable at 100% of its parent, so padding on the editable itself overflows and gets clipped.
-- The panel is 440 px wide and as tall as the visible conversation area allows above Gmail's formatting toolbar (360–640 px). Narrower than 820 px, it goes above the text.
+- The assistant **floats over Gmail, like LanguageTool**, instead of sitting beside or above the text (replaces section 3's "UI placement" and the ready bar's position in 5.2). Gmail's layout is never changed, so the text never moves; reserving space for the panel made the text jump and the panel got clipped by Gmail's containers.
+  - **Collapsed (5.3):** a round sparkle badge at the reply's top-right corner. On hover or keyboard focus it opens into "Mostrar assistente"; once there is a list it shows the number of points and outside tasks still to do. Its accessible name always carries the full label.
+  - **Ready (5.2):** the "Quer ajuda com este pedido?" card drops down from the badge's corner when a reply opens; typing collapses it to the badge. Its hint now reads "Ou escreva a sua resposta, como sempre."
+  - **Panel (5.4–5.6):** docked to the right edge of the window, full height below Gmail's top bar, 420 px wide. It stays put while the conversation scrolls and overlaps the right of the page until hidden with "Esconder". The person can drag it anywhere by its header (it stays inside the window, and keeps that place until Gmail is reloaded); double-clicking the header docks it again.
+  - **Motion:** the badge pops in, the card drops in, the panel slides in from the right and out on "Esconder". Animations play only on opening and closing, and are off when the system asks for reduced motion.
 - "Preparar esta lista sempre que abro uma resposta" moved from the panel footer into "Como funciona" (open issue 10, done).
-- The small in-row buttons (Feito, Confirmar, Desfazer) and the owner toggle are 34 px high, below the 40–44 px target in section 8, to fit the panel. Revisit if testing shows they are hard to hit.
+- The small in-row buttons (Feito, Confirmar, Desfazer), the owner toggle and the collapsed badge are 32–36 px high, below the 40–44 px target in section 8, to fit the panel and keep the badge unobtrusive. Revisit if testing shows they are hard to hit.

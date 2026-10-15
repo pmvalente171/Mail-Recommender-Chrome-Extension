@@ -291,7 +291,7 @@ Accept unknown event names and fields (store them as they are). Events contain *
 
 - **Calls come from the extension's service worker**, not from the Gmail page. The extension will declare the backend URL in its `host_permissions`, so CORS is not enforced. Allowing it does no harm.
 - **Errors:** any non-2xx response makes the extension show "Não foi possível contactar o assistente." with a retry button. Return a JSON body `{ "error": "…" }` with a useful message for the logs. Use `400` for malformed requests (e.g. a `/generate` point id with a slot key not in its needs), `500` for failures.
-- **Timing:** the extension animates progress steps while it waits and has no timeout yet. Aim for `/list` under ~20 s and `/generate` under ~20 s. Above ~60 s, return an error rather than hanging.
+- **Timing:** the extension animates progress steps while it waits and gives up after **150 s**, so the server's own timeout (currently 120 s) fires first and returns a proper error. Current latency with the shared Gemma endpoint is 30–95 s per call. `/list` blocks the first view of the panel, so it benefits most from being faster (e.g. retrieval plus a single model call).
 - **Validate your own output** before returning it: required fields present, need keys match `^[a-z0-9_]+$`, every slot is a need of its point, no paragraph for an unrequested point, no redaction labels in `text`. If the model's output fails, retry once, then return `500`.
 - **Base URL:** `http://localhost:4000` during development. In production it will be university-hosted over HTTPS, and the URL is a constant in the extension.
 

@@ -3,6 +3,7 @@
     "version": "0.1.0",
     "description": "AI-powered email autocomplete and recommendations",
     "permissions": ["storage"],
+    "host_permissions": ["http://localhost:4000/*"],
     "manifest_version": 3,
     "content_scripts": [
         {

@@ -100,17 +100,39 @@ async function sha256(text) {
 }
 
 // --- Backend (through the service worker) -----------------------------------
+async function callBackend(type, payload) {
+  const response = await chrome.runtime.sendMessage({ type, payload })
+  if (!response || !response.ok) throw new Error(response ? response.error : 'No response')
+  return response.data
+}
+
+// Returns the list plus what /generate needs later: the redacted thread and
+// ticket that were sent, and the requester's name for the greeting, which
+// stays in the browser.
 async function requestList(replyBox) {
   const thread = readThread(replyBox)
   if (!thread || !thread.text) throw new Error('No thread text')
   const names = thread.messages.map((m) => m.from).filter(Boolean)
-  const response = await chrome.runtime.sendMessage({
-    type: 'dalm:list',
-    payload: { thread: redact(thread.text, names), ticket: await sha256(thread.threadId) }
-  })
-  if (!response || !response.ok) throw new Error(response ? response.error : 'No response')
-  return response.list
+  const sent = { thread: redact(thread.text, names), ticket: await sha256(thread.threadId) }
+  const list = await callBackend('dalm:list', sent)
+  return { list, sent, requester: names[0] || '' }
 }
+
+async function requestGenerate(payload) {
+  const data = await callBackend('dalm:generate', payload)
+  return (data && data.paragraphs) || []
+}
+
+// Fixed text around the assistant's paragraphs, added locally when the reply
+// is empty (HANDOFF.md section 4: greeting, thanks and sign-off come from a
+// template, not the model).
+const TEMPLATE = {
+  greeting: (name) => name ? `Caro(a) ${name},` : 'Caro(a) Senhor(a),',
+  thanks: 'Obrigado pelo seu contacto.',
+  signoff: ['Com os melhores cumprimentos,', 'Divisão Académica']
+}
+// Gmail's own signature and quoted text: the assistant's text goes above them.
+const GMAIL_TAIL = '.gmail_signature, .gmail_signature_prefix, .gmail_quote, .gmail_extra'
 
 // Fills in defaults so the panel never has to guess at missing fields.
 function normalizeList(list) {
@@ -131,7 +153,6 @@ function normalizeList(list) {
 
 const STEPS_LIST = ['A ler o email', 'A perceber o pedido', 'A procurar a informação nas fontes a que tenho acesso']
 const STEP_DELAY_MS = 650
-const MOCK_WRITE_MS = 1800 // stand-in for POST /generate until build step 5
 
 // Short plain messages for failures (HANDOFF.md open issue 8).
 function errorMessage(err) {
@@ -162,7 +183,8 @@ const UI_CSS = `
   --amber-line:#B8921C; --amber-text:#6B4E00; --amber-field:#FFFBEF; --amber-field-line:#E2C76E;
   --danger-line:#E3B4B4; --danger-ink:#8A2C2C;
   --font-ui:'Public Sans DALM','Helvetica Neue',Arial,sans-serif;
-  --font-mail:Arial,Helvetica,sans-serif}
+  --font-mail:Arial,Helvetica,sans-serif;
+  --float-shadow:0 10px 28px rgba(23,40,34,.20),0 2px 6px rgba(23,40,34,.10)}
 *{box-sizing:border-box}
 .root{font-family:var(--font-ui);color:var(--ink);font-size:14px;line-height:1.4}
 button{font-family:inherit;cursor:pointer}
@@ -175,21 +197,38 @@ button{font-family:inherit;cursor:pointer}
 .link.muted{color:var(--ink-2)}
 
 .bar{display:flex;flex-direction:column;gap:10px}
-.bar-card{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 16px;background:var(--green-50);border:1px solid var(--green-200);border-radius:12px}
+.bar-card{display:flex;align-items:center;gap:12px 14px;flex-wrap:wrap;padding:14px 16px;background:var(--green-50);border:1px solid var(--green-200);border-radius:12px;box-shadow:var(--float-shadow)}
 .badge{flex:0 0 auto;width:34px;height:34px;border-radius:50%;background:var(--green-700);color:#fff;display:flex;align-items:center;justify-content:center}
 .badge.sm{width:24px;height:24px}
 .bar-text{flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:2px}
 .bar-text strong{font-size:15px;color:var(--green-900)}
 .bar-text span{font-size:13.5px;color:var(--ink-2)}
-.mail-hint{font-family:var(--font-mail);font-size:14px;color:var(--ink-4);padding-left:2px}
+.mail-hint{flex:1 1 100%;font-size:12.5px;color:var(--ink-3)}
 .chip-row{display:flex;justify-content:flex-end}
-.chip{display:inline-flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;padding:0 16px;min-height:40px;border-radius:20px;border:1px solid var(--green-200);background:var(--green-50);color:var(--green-700)}
+.fab{display:inline-flex;align-items:center;height:32px;padding:0 3px;border-radius:16px;border:1px solid var(--green-200);background:#fff;color:var(--green-700);font-size:13px;font-weight:600;box-shadow:0 2px 8px rgba(23,40,34,.18);transition:box-shadow .18s ease}
+.fab:hover,.fab:focus-visible{box-shadow:0 4px 14px rgba(23,40,34,.24)}
+.fab-icon{flex:0 0 auto;width:24px;height:24px;border-radius:50%;background:var(--green-700);color:#fff;display:flex;align-items:center;justify-content:center}
+.fab-label{max-width:0;overflow:hidden;white-space:nowrap;opacity:0;transition:max-width .24s ease,opacity .18s ease,margin .24s ease}
+.fab:hover .fab-label,.fab:focus-visible .fab-label{max-width:170px;opacity:1;margin:0 4px 0 8px}
+.fab-count{min-width:18px;height:18px;margin:0 2px 0 4px;padding:0 5px;border-radius:9px;background:var(--green-600);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
+@keyframes dalm-pop{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:none}}
+@keyframes dalm-drop{from{opacity:0;transform:translateY(-8px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes dalm-slide-in{from{opacity:0;transform:translateX(32px)}to{opacity:1;transform:none}}
+@keyframes dalm-slide-out{to{opacity:0;transform:translateX(32px)}}
+@keyframes dalm-fade-out{to{opacity:0;transform:translateY(-6px)}}
+.enter .fab{animation:dalm-pop .2s ease-out;transform-origin:right center}
+.enter .bar{animation:dalm-drop .22s ease-out;transform-origin:top right}
+.enter .panel{animation:dalm-slide-in .26s cubic-bezier(.2,.8,.2,1)}
+.leaving .panel{animation:dalm-slide-out .18s ease-in forwards}
+.leaving .bar{animation:dalm-fade-out .16s ease-in forwards}
 
-.panel{display:flex;flex-direction:column;background:#fff;border:1px solid var(--panel-border);border-radius:14px;overflow:hidden;height:var(--panel-height,560px)}
-.panel.top{height:auto;max-height:520px}
-.panel-head{display:flex;align-items:center;gap:6px;padding:12px 16px;border-bottom:1px solid var(--panel-line)}
+.panel{display:flex;flex-direction:column;background:#fff;border:1px solid var(--panel-border);border-radius:14px;overflow:hidden;height:var(--panel-height,560px);box-shadow:var(--float-shadow)}
+.panel-head{display:flex;align-items:center;gap:6px;padding:12px 16px;border-bottom:1px solid var(--panel-line);cursor:grab;user-select:none;touch-action:none}
+.panel-head button{cursor:pointer}
+.panel.dragging{box-shadow:0 18px 40px rgba(23,40,34,.28),0 4px 10px rgba(23,40,34,.12)}
+.panel.dragging .panel-head{cursor:grabbing}
 .panel-head strong{flex:1 1 auto;font-size:15px;color:var(--green-900)}
-.panel-body{flex:1 1 auto;overflow-y:auto;padding:14px 18px 10px;display:flex;flex-direction:column;gap:14px}
+.panel-body{flex:1 1 auto;min-height:0;overflow-y:auto;padding:14px 18px 10px;display:flex;flex-direction:column;gap:14px}
 .panel-foot{display:flex;flex-direction:column;gap:10px;padding:12px 18px;border-top:1px solid var(--panel-line);background:#F7FAF8}
 .row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .steps{padding:18px;display:flex;flex-direction:column;gap:12px}
@@ -235,7 +274,6 @@ button{font-family:inherit;cursor:pointer}
 .field label{flex:0 0 auto;width:118px;font-size:12.5px;color:var(--amber-text)}
 .field input,.edit input{flex:1 1 auto;min-width:0;font:inherit;font-size:13.5px;padding:0 10px;min-height:34px;border:1px solid var(--amber-field-line);border-radius:8px;background:var(--amber-field);color:var(--ink)}
 .field input.filled{border-color:#C4CDC8;background:#fff}
-@media (prefers-reduced-motion: reduce){.state .spin{animation-duration:3s}}
 .message{font-size:13px;font-weight:600;color:var(--green-700)}
 .message.warn{color:var(--amber-text)}
 .persist{display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--ink-3)}
@@ -255,18 +293,26 @@ button{font-family:inherit;cursor:pointer}
 .guide ol{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px;font-size:14.5px}
 .guide li{display:flex;gap:12px;align-items:flex-start}
 .num{flex:0 0 auto;width:24px;height:24px;border-radius:50%;background:var(--green-100);color:var(--green-700);font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center}
-@media (prefers-reduced-motion: reduce){*{transition:none!important}}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}.state .spin{animation:dalm-spin 3s linear infinite!important}}
 `
 
-// Page-level styles: the font, and the anchor for our host element.
-const PANEL_WIDTH = 440
-const PANEL_HEIGHT = 640 // at most; less if the window is shorter
-const PANEL_MIN_HEIGHT = 360
-const PANEL_GAP = 16
-const TOOLBAR_FALLBACK = 64 // if Gmail's formatting toolbar can't be found
-const REPLY_HEADER = 80 // Gmail's "Para" line above the reply body
-const NARROW_BELOW = 820 // reply body narrower than this: panel goes above the text
+// Sizes, in px. The badge and the "Quer ajuda?" card sit at the reply's
+// top-right corner; the panel docks to the right edge of the window.
+const PANEL_WIDTH = 420
+const BAR_WIDTH = 440
+const PANEL_MIN_HEIGHT = 280
+const EDGE = 8 // gap to the reply's corner
+const DOCK_GAP = 16 // gap between the docked panel and the window's edges
+const LEAVE_MS = 180 // length of the closing animations
 
+// Where the person dragged the panel ({ left, top } in px), or null when it is
+// docked to the right edge. Shared by every reply on the page and kept until
+// the page reloads; double-clicking the panel's header docks it again.
+let panelSpot = null
+
+// Page-level styles: the font, and the floating host. The host lives on
+// <body>, not inside Gmail's reply, so it never changes Gmail's layout and no
+// Gmail container can clip it.
 function injectPageStyles() {
   if (document.getElementById('dalm-page-style')) return
   const style = document.createElement('style')
@@ -275,8 +321,7 @@ function injectPageStyles() {
   style.textContent = `
     @font-face{font-family:'Public Sans DALM';font-style:normal;font-weight:100 900;font-display:swap;
       src:url(${font}) format('woff2-variations'),url(${font}) format('woff2')}
-    [data-dalm-parent]{position:relative !important}
-    [data-dalm-host]{display:block;position:absolute;z-index:2;margin:0}
+    [data-dalm-host]{display:block;position:fixed;z-index:990;margin:0}
   `
   document.head.appendChild(style)
 }
@@ -285,7 +330,7 @@ function injectPageStyles() {
 // shadow root are retargeted to the host, so typing "c" in one of our fields
 // would open a new message. Stop them (and clicks) at the host.
 function isolateEvents(host) {
-  for (const type of ['keydown', 'keyup', 'keypress', 'input', 'mousedown', 'mouseup', 'click']) {
+  for (const type of ['keydown', 'keyup', 'keypress', 'input', 'mousedown', 'mouseup', 'click', 'dblclick', 'pointerdown']) {
     host.addEventListener(type, (e) => e.stopPropagation())
   }
 }
@@ -343,20 +388,11 @@ function closeGuide() {
 
 // --- The assistant attached to one reply box --------------------------------
 function createAssistant(replyBox) {
-  const parent = replyBox.parentElement
   const host = document.createElement('div')
   host.dataset.dalmHost = ''
   isolateEvents(host)
   const root = host.attachShadow({ mode: 'open' })
-  parent.dataset.dalmParent = ''
-  parent.insertBefore(host, replyBox)
-
-  // Gmail's own spacing, so ours is added on top of it rather than replacing it.
-  const base = getComputedStyle(replyBox)
-  const basePadTop = parseFloat(base.paddingTop) || 0
-  const basePadRight = parseFloat(base.paddingRight) || 0
-  const baseMinHeight = replyBox.style.minHeight
-  const baseParentPadRight = parseFloat(getComputedStyle(parent).paddingRight) || 0
+  document.body.appendChild(host)
 
   let S = {
     view: 'ready', // 'ready' | 'declined' | 'working' | 'list'
@@ -367,7 +403,6 @@ function createAssistant(replyBox) {
   }
   let timer = null
   let workToken = 0 // bumped on cancel, so a late response is ignored
-  let narrow = false
 
   function set(patch) {
     S = Object.assign({}, S, typeof patch === 'function' ? patch(S) : patch)
@@ -409,77 +444,114 @@ function createAssistant(replyBox) {
     workToken++
   }
 
-  function currentMode() {
-    const panelOpen = S.view === 'working' || S.view === 'list'
-    return panelOpen && !narrow ? 'side' : 'top'
-  }
-
-  // The host floats over the reply body and space is made for it so the
-  // person's text starts clear of it. Above the text (bar, chip, narrow panel)
-  // the editable gets padding-top. Beside the text (side panel) the space goes
-  // on the editable's *parent* instead: Gmail sizes the editable at 100% of
-  // its parent, so padding on the editable itself makes it overflow and get
-  // clipped by an outer overflow:hidden container. Only inline styles change,
-  // never the editable's content, so none of this is sent with the email.
-  function layout() {
-    if (!replyBox.isConnected) return
-    const mode = currentMode()
-    host.style.top = `${replyBox.offsetTop}px`
-    if (mode === 'side') {
-      const height = sidePanelHeight()
-      host.style.left = 'auto'
-      host.style.right = `${baseParentPadRight}px`
-      host.style.width = `${PANEL_WIDTH}px`
-      host.style.setProperty('--panel-height', `${height}px`)
-      parent.style.setProperty('padding-right', `${baseParentPadRight + PANEL_WIDTH + PANEL_GAP}px`, 'important')
-      replyBox.style.setProperty('padding-top', `${basePadTop}px`, 'important')
-      replyBox.style.setProperty('min-height', `${height}px`, 'important')
-    } else {
-      parent.style.setProperty('padding-right', `${baseParentPadRight}px`, 'important')
-      host.style.left = `${replyBox.offsetLeft}px`
-      host.style.right = 'auto'
-      host.style.width = `${replyBox.offsetWidth - basePadRight}px`
-      replyBox.style.setProperty('padding-top', `${basePadTop + host.offsetHeight + 8}px`, 'important')
-      replyBox.style.minHeight = baseMinHeight
-    }
-  }
-
-  // The conversation is a scroll area, and when the reply is taller than it,
-  // Gmail's formatting toolbar sticks to its bottom edge. Size the side panel
-  // so that, with the reply scrolled into view, the panel fits between the
-  // reply header and that toolbar and its footer buttons are never hidden.
+  // The conversation scrolls inside a Gmail container, not the page.
   const scroller = (() => {
-    for (let n = parent.parentElement; n; n = n.parentElement) {
+    for (let n = replyBox.parentElement; n; n = n.parentElement) {
       if (/(auto|scroll)/.test(getComputedStyle(n).overflowY)) return n
     }
     return null
   })()
 
-  function sidePanelHeight() {
-    if (!scroller) return PANEL_HEIGHT
-    const box = scroller.getBoundingClientRect()
-    const toolbar = [...scroller.querySelectorAll('[role="toolbar"]')]
-      .map((t) => t.getBoundingClientRect())
-      .find((r) => r.height > 0 && r.top < box.bottom && r.bottom > box.top)
-    const covered = toolbar ? box.bottom - toolbar.top : TOOLBAR_FALLBACK
-    const available = scroller.clientHeight - covered - REPLY_HEADER - PANEL_GAP
-    return Math.max(PANEL_MIN_HEIGHT, Math.min(PANEL_HEIGHT, Math.round(available)))
+  const panelOpen = () => S.view === 'working' || S.view === 'list'
+
+  // Floats over Gmail like LanguageTool: nothing in Gmail's layout changes, so
+  // the person's text never moves. The badge and the "Quer ajuda?" card sit at
+  // the reply's top-right corner (sticking to the top of the visible area while
+  // the reply scrolls, hidden when it is out of view); the panel docks to the
+  // right edge of the window, below Gmail's top bar, and stays put.
+  function position() {
+    if (!replyBox.isConnected) return
+    const clip = scroller ? scroller.getBoundingClientRect() : { top: 0, bottom: window.innerHeight }
+    const viewportWidth = document.documentElement.clientWidth
+    if (panelOpen()) {
+      const width = Math.max(280, Math.min(PANEL_WIDTH, viewportWidth - 2 * DOCK_GAP))
+      const dockTop = Math.max(clip.top, 0) + DOCK_GAP / 2
+      let top = dockTop
+      host.style.display = ''
+      host.style.width = `${width}px`
+      if (panelSpot) {
+        // Dragged: keep it inside the window, with room for a usable height.
+        const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi))
+        top = clamp(panelSpot.top, DOCK_GAP / 2, window.innerHeight - PANEL_MIN_HEIGHT - DOCK_GAP)
+        host.style.left = `${clamp(panelSpot.left, DOCK_GAP / 2, viewportWidth - width - DOCK_GAP / 2)}px`
+        host.style.removeProperty('right')
+      } else {
+        host.style.removeProperty('left')
+        host.style.right = `${DOCK_GAP}px`
+      }
+      host.style.top = `${top}px`
+      host.style.setProperty('--panel-height', `${Math.max(PANEL_MIN_HEIGHT, window.innerHeight - top - DOCK_GAP)}px`)
+      return
+    }
+    host.style.removeProperty('left')
+    const r = replyBox.getBoundingClientRect()
+    const top = Math.max(r.top, clip.top) + EDGE
+    const visible = Math.min(r.bottom, clip.bottom) - top
+    if (!r.width || visible < 24) { host.style.display = 'none'; return }
+    host.style.display = ''
+    host.style.top = `${top}px`
+    host.style.right = `${viewportWidth - r.right + EDGE}px`
+    host.style.width = S.view === 'ready' ? `${Math.min(BAR_WIDTH, r.width - 2 * EDGE)}px` : 'auto'
+  }
+
+  // Dragging the panel by its header (not by its buttons). Listening on the
+  // window keeps the drag going even if the panel re-renders under the pointer.
+  root.addEventListener('pointerdown', (e) => {
+    const head = e.target.closest('.panel-head')
+    if (!head || e.button !== 0 || e.target.closest('button, a, input')) return
+    e.preventDefault()
+    const start = host.getBoundingClientRect()
+    const dx = e.clientX - start.left
+    const dy = e.clientY - start.top
+    const panel = root.querySelector('.panel')
+    if (panel) panel.classList.add('dragging')
+    const move = (ev) => { panelSpot = { left: ev.clientX - dx, top: ev.clientY - dy }; position() }
+    const up = () => {
+      window.removeEventListener('pointermove', move, true)
+      window.removeEventListener('pointerup', up, true)
+      const p = root.querySelector('.panel')
+      if (p) p.classList.remove('dragging')
+    }
+    window.addEventListener('pointermove', move, true)
+    window.addEventListener('pointerup', up, true)
+  })
+  root.addEventListener('dblclick', (e) => {
+    if (!e.target.closest('.panel-head') || e.target.closest('button, a, input')) return
+    panelSpot = null
+    position()
+  })
+
+  // Plays the closing animation, then applies the change.
+  function leaveThen(patch) {
+    const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const box = root.querySelector('.root')
+    if (reduced || !box) { set(patch); return }
+    box.classList.add('leaving')
+    setTimeout(() => set(patch), LEAVE_MS)
+  }
+
+  let lastShown = null
+  let positionFrame = 0
+  const schedulePosition = () => {
+    if (!positionFrame) positionFrame = requestAnimationFrame(() => { positionFrame = 0; position() })
   }
 
   function render() {
-    const mode = currentMode()
-    host.dataset.dalmMode = mode
-
     const active = root.activeElement && root.activeElement.id
       ? { id: root.activeElement.id, pos: root.activeElement.selectionStart }
       : null
 
     let h = ''
     if (S.view === 'ready') h = renderBar()
-    else if (S.view === 'declined') h = `<div class="chip-row"><button class="chip" data-a="reopen">${SPARK(15)} Mostrar assistente</button></div>`
-    else h = renderPanel(mode)
-    root.innerHTML = `<style>${UI_CSS}</style><div class="root">${h}</div>`
-    layout()
+    else if (S.view === 'declined') h = renderBadge()
+    else h = renderPanel()
+    // Opening animations play only when what is shown changes, not on every
+    // re-render (which happens on each keystroke in the panel's fields).
+    const shown = panelOpen() ? 'panel' : S.view
+    const enter = shown !== lastShown
+    lastShown = shown
+    root.innerHTML = `<style>${UI_CSS}</style><div class="root ${enter ? 'enter' : ''}">${h}</div>`
+    position()
 
     if (active) {
       const el = root.getElementById(active.id)
@@ -490,17 +562,27 @@ function createAssistant(replyBox) {
     }
   }
 
+  // Collapsed: a round badge that opens into "Mostrar assistente" on hover or
+  // keyboard focus, with the number of points still to do once there is a list.
+  function renderBadge() {
+    const pending = S.hadList ? S.points.filter((p) => !p.done).length + S.outside.filter((o) => !o.done).length : 0
+    const count = pending ? `<span class="fab-count" aria-hidden="true">${pending}</span>` : ''
+    const label = pending ? `Mostrar assistente (${pending} por fazer)` : 'Mostrar assistente'
+    return `<div class="chip-row"><button class="fab" data-a="reopen" aria-label="${label}" title="${label}">
+      <span class="fab-icon">${SPARK(14)}</span><span class="fab-label">Mostrar assistente</span>${count}</button></div>`
+  }
+
   function renderBar() {
     return `<div class="bar"><div class="bar-card">
       <span class="badge">${SPARK(18)}</span>
       <div class="bar-text"><strong>Quer ajuda com este pedido?</strong><span>O assistente pode preparar uma lista do que a resposta deve tratar. Só lê o email se clicar.</span></div>
       <button class="btn-primary" data-a="askList">Preparar a lista</button>
       <button class="btn-quiet" data-a="decline">Não, obrigado</button>
-    </div><span class="mail-hint">Ou escreva a sua resposta aqui, como sempre.</span></div>`
+    <span class="mail-hint">Ou escreva a sua resposta, como sempre.</span></div></div>`
   }
 
-  function renderPanel(mode) {
-    let h = `<aside class="panel ${mode === 'top' ? 'top' : ''}" aria-label="Assistente DALM"><div class="panel-head"><span class="badge sm">${SPARK(13)}</span><strong>Assistente DALM</strong>
+  function renderPanel() {
+    let h = `<aside class="panel" aria-label="Assistente DALM"><div class="panel-head" title="Arraste para mover · duplo clique para voltar ao lado"><span class="badge sm">${SPARK(13)}</span><strong>Assistente DALM</strong>
       <button class="link" data-a="openHelp">Como funciona</button><button class="link muted" data-a="hide">Esconder</button></div>`
 
     if (S.view === 'working' && S.error) {
@@ -524,7 +606,7 @@ function createAssistant(replyBox) {
     const anyAI = S.points.some((p) => p.ai)
     const writing = S.points.some((p) => p.writing)
     const toWrite = S.points.filter((p) => p.owner === 'ai' && !p.ai && !p.done && !p.writing)
-    const regenerable = S.points.filter((p) => p.ai && !p.done)
+    const regenerable = regenerableIds()
     const doneCount = S.points.filter((p) => p.done).length
     const totalNeeds = S.points.reduce((n, p) => n + p.needs.length, 0)
     const stepItems = S.steps.map((s) => `<li>${esc(s)}</li>`)
@@ -551,12 +633,15 @@ function createAssistant(replyBox) {
     let msg = ''
     let warn = false
     if (writing) msg = 'A escrever os pontos do assistente…'
+    else if (S.genError) { msg = errorMessage(S.genError); warn = true }
     else if (missingInText > 0) { msg = missingInText === 1 ? 'Falta 1 informação, a amarelo no texto.' : `Faltam ${missingInText} informações, a amarelo no texto.`; warn = true }
     else if (unreviewed > 0) msg = 'Leia o texto do assistente e confirme cada ponto.'
     else if (doneCount === S.points.length && S.points.length) msg = outsideDone ? 'Tudo tratado. Envie quando quiser.' : 'Resposta tratada. Falta a tarefa fora do email.'
 
     const buttons = writing
       ? '<button class="btn-secondary" data-a="cancelWriting">Cancelar</button>'
+      : S.genError
+      ? '<button class="btn-primary" data-a="retryGenerate">Tentar outra vez</button>'
       : (toWrite.length ? `<button class="btn-primary" data-a="generate">${SPARK(15)} Gerar os pontos do assistente (${toWrite.length})</button>` : '') +
         (regenerable.length ? '<button class="btn-secondary" data-a="regenerate">Gerar outra versão</button>' : '') +
         (anyAI ? '<button class="link muted" data-a="removeAI">Retirar texto do assistente</button>' : '<button class="link" data-a="startEdit">Editar lista</button>')
@@ -636,30 +721,212 @@ function createAssistant(replyBox) {
     set({ [key]: S[key].map((x) => x.id === el.dataset.id ? { ...x, ...(typeof patch === 'function' ? patch(x) : patch) } : x) })
   }
 
-  // Marks the points as being written, then as written by the assistant
-  // (never as done: only the person confirms). Calling /generate and putting
-  // the text into the email is build step 5; for now this is simulated.
-  function writePoints(ids) {
-    if (!ids.length) return
-    clearTimeout(timer)
-    const token = ++workToken
-    set({ points: S.points.map((p) => ids.includes(p.id) ? { ...p, writing: true } : p) })
-    timer = setTimeout(() => {
+  // --- The assistant's text in the email -------------------------------------
+  // Each paragraph is a plain <div> in Gmail's editable body (one per point,
+  // then an empty line), remembered with the text it was last written with.
+  // While that text is unchanged the paragraph is the assistant's: values are
+  // refilled and "Gerar outra versão" replaces it. Once the person edits it,
+  // it is theirs: only its still-empty [placeholders] are filled in
+  // (HANDOFF.md section 3 and open issue 6). Values never leave the browser.
+  const blocks = new Map() // point id → { point, el, gap, segments, rendered }
+  let frame = [] // greeting, thanks and sign-off lines: { el, rendered }
+  let sent = null // the redacted thread and ticket sent to /list, reused for /generate
+  let requester = '' // for the greeting; never sent
+
+  const norm = (s) => s.replace(/\s+/g, ' ').trim()
+  const untouched = (b) => b.el.isConnected && norm(b.el.textContent) === norm(b.rendered)
+
+  function lineDiv(text) {
+    const div = document.createElement('div')
+    if (text) div.textContent = text
+    else div.appendChild(document.createElement('br'))
+    return div
+  }
+
+  const placeholder = (point, key) => {
+    const need = point.needs.find((n) => n.key === key)
+    return `[${need ? need.label : key}]`
+  }
+  const paragraphText = (point, segments) => segments
+    .map((s) => s.slot ? (has(s.slot) ? S.values[s.slot].trim() : placeholder(point, s.slot)) : (s.text || ''))
+    .join('')
+
+  // Gmail's signature or quoted text, or our own sign-off: text goes above it.
+  function tailAnchor() {
+    const signoff = frame.find((f) => f.signoff && f.el.isConnected)
+    if (signoff) return signoff.el
+    return [...replyBox.children].find((c) => c.matches(GMAIL_TAIL) || c.querySelector(GMAIL_TAIL)) || null
+  }
+
+  // The next paragraph of a later point, so paragraphs follow the list order.
+  function anchorAfter(pointId) {
+    const ids = S.points.map((p) => p.id)
+    for (const id of ids.slice(ids.indexOf(pointId) + 1)) {
+      const b = blocks.get(id)
+      if (b && b.el.parentNode === replyBox) return b.el
+    }
+    return tailAnchor()
+  }
+
+  function hasOwnText() {
+    const tail = tailAnchor()
+    for (const child of replyBox.children) {
+      if (child === tail) break
+      if (child.textContent.trim()) return true
+    }
+    return false
+  }
+
+  // Greeting and sign-off, only when the reply was empty.
+  function addFrame() {
+    if (frame.length || hasOwnText()) return
+    const signature = [...replyBox.children].some((c) => c.matches(GMAIL_TAIL) || c.querySelector(GMAIL_TAIL))
+    const top = [TEMPLATE.greeting(requester), '', TEMPLATE.thanks, '']
+    const bottom = signature ? [TEMPLATE.signoff[0]] : TEMPLATE.signoff
+    // Gmail starts an empty reply with a blank line; the template replaces it.
+    const tail0 = tailAnchor()
+    for (const child of [...replyBox.children]) {
+      if (child === tail0) break
+      if (!child.textContent.trim() && !child.querySelector('img')) child.remove()
+    }
+    const first = replyBox.firstChild
+    for (const text of top) {
+      const el = lineDiv(text)
+      replyBox.insertBefore(el, first)
+      frame.push({ el, rendered: text })
+    }
+    const tail = tailAnchor()
+    bottom.forEach((text, i) => {
+      const el = lineDiv(text)
+      replyBox.insertBefore(el, tail)
+      frame.push({ el, rendered: text, signoff: i === 0 })
+    })
+  }
+
+  // Writes or replaces a point's paragraph. Returns false if the person has
+  // edited it, in which case it is left alone.
+  function placeParagraph(point, segments) {
+    const text = paragraphText(point, segments)
+    const existing = blocks.get(point.id)
+    if (existing && existing.el.isConnected) {
+      if (!untouched(existing)) return false
+      existing.el.textContent = text
+      Object.assign(existing, { point, segments, rendered: text })
+      return true
+    }
+    const el = lineDiv(text)
+    const gap = lineDiv('')
+    const next = anchorAfter(point.id)
+    const before = next && next.parentNode === replyBox ? next : null
+    replyBox.insertBefore(el, before)
+    replyBox.insertBefore(gap, before)
+    blocks.set(point.id, { point, el, gap, segments, rendered: text })
+    return true
+  }
+
+  // Puts the values typed in the panel into the email.
+  function refillParagraphs() {
+    let changed = false
+    for (const b of blocks.values()) {
+      if (!b.el.isConnected) continue
+      const point = S.points.find((p) => p.id === b.point.id) || b.point
+      if (untouched(b)) {
+        const text = paragraphText(point, b.segments)
+        if (text !== b.rendered) { b.el.textContent = text; b.rendered = text; changed = true }
+        continue
+      }
+      // Edited by the person: only fill placeholders still in the text.
+      for (const s of b.segments) {
+        if (!s.slot || !has(s.slot)) continue
+        const mark = placeholder(point, s.slot)
+        const walker = document.createTreeWalker(b.el, NodeFilter.SHOW_TEXT)
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (node.nodeValue.includes(mark)) { node.nodeValue = node.nodeValue.replace(mark, S.values[s.slot].trim()); changed = true }
+        }
+      }
+    }
+    if (changed) tellGmail()
+  }
+
+  function removeAssistantText() {
+    for (const b of blocks.values()) { b.el.remove(); b.gap.remove() }
+    blocks.clear()
+    for (const f of frame) if (untouched(f)) f.el.remove()
+    frame = []
+    tellGmail()
+  }
+
+  // Gmail saves the draft on input events, not on DOM changes.
+  const tellGmail = () => replyBox.dispatchEvent(new Event('input', { bubbles: true }))
+
+  // A paragraph the person deleted puts its point back to "not written".
+  function syncWithEmail() {
+    const gone = S.points.filter((p) => p.ai && !p.done && !p.writing && !(blocks.get(p.id) && blocks.get(p.id).el.isConnected))
+    if (!gone.length) return
+    for (const p of gone) {
+      const b = blocks.get(p.id)
+      if (b && b.gap.isConnected && !b.gap.textContent.trim()) b.gap.remove()
+      blocks.delete(p.id)
+    }
+    set({ points: S.points.map((p) => gone.includes(p) ? { ...p, ai: false } : p) })
+  }
+
+  // Asks /generate for the given points and writes their paragraphs into the
+  // email. They are marked as written by the assistant, never as done: only
+  // the person confirms. With `again`, the current paragraphs are sent as
+  // `previous` so the backend writes a different version.
+  function writePoints(ids, again) {
+    if (!ids.length || !sent) return
+    stopWork()
+    const token = workToken
+    set({ genError: null, points: S.points.map((p) => ids.includes(p.id) ? { ...p, writing: true } : p) })
+    const asked = S.points.filter((p) => ids.includes(p.id))
+    const previous = again
+      ? asked.map((p) => blocks.get(p.id)).filter(Boolean).map((b) => ({ point: b.point.id, segments: b.segments }))
+      : null
+    const payload = {
+      ...sent,
+      request_summary: S.request,
+      points: asked.map(({ id, title, desc, needs }) => ({ id, title, desc, needs })),
+      context_points: S.points.filter((p) => !ids.includes(p.id)).map(({ id, title, desc }) => ({ id, title, desc })),
+      previous,
+      instruction: null
+    }
+    requestGenerate(payload).then((paragraphs) => {
       if (token !== workToken) return
-      set({ points: S.points.map((p) => ids.includes(p.id) ? { ...p, writing: false, ai: true, done: false } : p) })
-    }, MOCK_WRITE_MS)
+      addFrame()
+      const written = []
+      for (const para of paragraphs) {
+        const point = asked.find((p) => p.id === para.point)
+        if (point && Array.isArray(para.segments) && placeParagraph(point, para.segments) !== false) written.push(point.id)
+      }
+      tellGmail()
+      set({ points: S.points.map((p) => ids.includes(p.id) ? { ...p, writing: false, ai: p.ai || written.includes(p.id), done: false } : p) })
+    }, (err) => {
+      if (token !== workToken) return
+      set({ genError: err, retryIds: ids, retryAgain: !!again, points: stopWriting() })
+    })
   }
 
   const stopWriting = () => S.points.map((p) => p.writing ? { ...p, writing: false } : p)
 
+  // "Gerar outra versão" rewrites the assistant's paragraphs that are neither
+  // confirmed nor edited by the person.
+  const regenerableIds = () => S.points
+    .filter((p) => p.ai && !p.done && blocks.has(p.id) && untouched(blocks.get(p.id)))
+    .map((p) => p.id)
+
   const actions = {
     // Explicit click (or the opt-in "Preparar sempre"): the only point where
     // the thread is read and sent.
-    askList: () => runWork(STEPS_LIST, requestList(replyBox),
-      (list) => ({ view: 'list', hadList: true, ...normalizeList(list), values: {}, stepsOpen: false }), 'askList'),
-    decline: () => set({ view: 'declined' }),
+    askList: () => runWork(STEPS_LIST, requestList(replyBox), (result) => {
+      sent = result.sent
+      requester = result.requester
+      return { view: 'list', hadList: true, ...normalizeList(result.list), values: {}, stepsOpen: false, genError: null }
+    }, 'askList'),
+    decline: () => leaveThen({ view: 'declined' }),
     reopen: () => set({ view: S.hadList ? 'list' : 'ready' }),
-    hide: () => { stopWork(); set({ view: 'declined', points: stopWriting() }) },
+    hide: () => { stopWork(); leaveThen({ view: 'declined', points: stopWriting() }) },
     cancel: () => { stopWork(); set({ view: S.hadList ? 'list' : 'ready', error: null }) },
     retry: () => S.retry && actions[S.retry](),
     openHelp: () => showGuide(),
@@ -669,9 +936,13 @@ function createAssistant(replyBox) {
     undoDone: (el) => updateItem(el, { done: false }),
     generate: () => writePoints(S.points.filter((p) => p.owner === 'ai' && !p.ai && !p.done && !p.writing).map((p) => p.id)),
     // Rewrites the assistant's points the person hasn't confirmed yet.
-    regenerate: () => writePoints(S.points.filter((p) => p.ai && !p.done).map((p) => p.id)),
+    regenerate: () => writePoints(regenerableIds(), true),
+    retryGenerate: () => writePoints(S.retryIds || [], S.retryAgain),
     cancelWriting: () => { stopWork(); set({ points: stopWriting() }) },
-    removeAI: () => set({ points: S.points.map((p) => p.ai ? { ...p, ai: false, done: false } : p) }),
+    removeAI: () => {
+      removeAssistantText()
+      set({ points: S.points.map((p) => p.ai ? { ...p, ai: false, done: false } : p) })
+    },
     startEdit: () => set({ editing: true, snapshot: S.points }),
     finishEdit: () => set({ editing: false }),
     cancelEdit: () => set({ editing: false, points: S.snapshot || S.points }),
@@ -685,7 +956,10 @@ function createAssistant(replyBox) {
   })
   root.addEventListener('input', (e) => {
     const t = e.target
-    if (t.dataset.key) set({ values: { ...S.values, [t.dataset.key]: t.value } })
+    if (t.dataset.key) {
+      set({ values: { ...S.values, [t.dataset.key]: t.value } })
+      refillParagraphs()
+    }
     else if (t.dataset.edit) {
       const v = t.value
       const i = v.indexOf(':')
@@ -704,33 +978,29 @@ function createAssistant(replyBox) {
 
   // Typing in the reply collapses the ready bar into "Mostrar assistente".
   replyBox.addEventListener('input', () => {
-    if (S.view === 'ready') set({ view: 'declined' })
+    if (S.view === 'ready') leaveThen({ view: 'declined' })
+    else syncWithEmail()
   })
 
-  // Re-anchor when the reply box or our own content changes size, and put the
-  // panel above the text when the reply body is too narrow for a column.
-  // The parent's clientWidth includes its padding, so it doesn't change when
-  // the side panel adds padding-right, and the layout can't flip-flop.
-  const resizeObserver = new ResizeObserver(() => {
-    const isNarrow = parent.clientWidth < NARROW_BELOW
-    if (isNarrow !== narrow) { narrow = isNarrow; render() } else layout()
-  })
-  resizeObserver.observe(parent)
+  // Follow the reply as the conversation scrolls or the window resizes.
+  window.addEventListener('scroll', schedulePosition, true)
+  window.addEventListener('resize', schedulePosition)
+  const resizeObserver = new ResizeObserver(schedulePosition)
   resizeObserver.observe(replyBox)
-  resizeObserver.observe(host)
-  if (scroller) resizeObserver.observe(scroller)
 
   // Gmail removes the reply box when it's closed or sent; poll for that since
-  // there's no reliable event for it.
+  // there's no reliable event for it. The poll also catches Gmail hiding the
+  // reply (e.g. switching to another conversation) without removing it.
   const cleanupInterval = setInterval(() => {
-    if (replyBox.isConnected) return
+    if (replyBox.isConnected) { position(); return }
     clearTimeout(timer)
     clearInterval(cleanupInterval)
     resizeObserver.disconnect()
+    window.removeEventListener('scroll', schedulePosition, true)
+    window.removeEventListener('resize', schedulePosition)
     host.remove()
   }, 1000)
 
-  narrow = parent.clientWidth < NARROW_BELOW
   render()
   if (!prefs.guideSeen) showGuide()
   if (prefs.prepareAlways) actions.askList()
