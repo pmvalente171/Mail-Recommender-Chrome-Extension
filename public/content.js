@@ -266,17 +266,33 @@ button{font-family:inherit;cursor:pointer}
 .rows{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:2px}
 .row-item{border-radius:10px}
 .row-item.open{background:#F6F8F7}
+.row-item.hl{background:#F3F6F4;box-shadow:inset 3px 0 0 var(--pc)}
+.pnum{flex:0 0 auto;width:20px;height:20px;border-radius:50%;background:var(--pc);color:#fff;font-size:11.5px;font-weight:700;display:flex;align-items:center;justify-content:center}
+.pnum.ghost{background:transparent;border:1.5px dashed var(--green-300);color:var(--green-700)}
+.row-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}
+.row-sub{font-size:12.5px;line-height:1.35;color:var(--ink-3);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.row-item.editing .row-head{align-items:flex-start;padding-top:6px;padding-bottom:6px}
+.row-item.editing .pnum{margin-top:7px}
+.edit-fields{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:4px}
+.edit-title,.edit-desc{width:100%;font:inherit;min-height:34px;padding:0 10px;border:1px solid #C4CDC8;border-radius:8px;background:#fff;color:var(--ink)}
+.edit-title{font-size:14px;font-weight:600}
+.edit-desc{font-size:13px;color:var(--ink-2)}
+.icon-btn{flex:0 0 auto;width:36px;height:36px;padding:0;border:0;border-radius:18px;background:transparent;color:var(--danger-ink);display:flex;align-items:center;justify-content:center}
+.icon-btn:hover{background:#FBEFEF}
+.icon-btn.add{color:var(--green-700)}
+.icon-btn.add:hover{background:var(--green-50)}
 .row-head{width:100%;display:flex;align-items:center;gap:8px;min-height:38px;padding:4px 6px;border:0;border-radius:10px;background:transparent;color:inherit;font:inherit;text-align:left}
 button.row-head:hover{background:#F1F4F2}
 .row-head.static{cursor:default}
-.row-title{flex:1 1 auto;min-width:0;font-size:14px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row-title{min-width:0;font-size:14px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .row-title.plain{font-weight:400;white-space:normal}
 .row-title.done{color:var(--ink-3)}
 .row-owner{flex:0 0 auto;width:26px;height:26px;border-radius:13px;display:flex;align-items:center;justify-content:center;color:var(--ink-3);background:#EEF1EF}
 .row-owner.ai{color:var(--green-700);background:var(--green-100)}
 .chev{flex:0 0 auto;display:flex;color:var(--ink-4);transition:transform .2s ease}
 .row-item.open .chev{transform:rotate(180deg)}
-.row-body{display:flex;flex-direction:column;gap:8px;padding:0 10px 10px 36px;animation:dalm-drop .18s ease-out}
+.row-body{display:flex;flex-direction:column;gap:8px;padding:0 10px 10px 36px}
+.row-item.opening .row-body{animation:dalm-drop .18s ease-out}
 .row-desc{margin:0;font-size:13.5px;line-height:1.45;color:var(--ink-2)}
 .state{flex:0 0 auto;width:22px;height:22px;display:flex;align-items:center;justify-content:center;color:var(--ink-4)}
 .state .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
@@ -296,7 +312,8 @@ button.row-head:hover{background:#F1F4F2}
 .btn-more{display:inline-flex;align-items:center;gap:4px;font-size:13px;font-weight:600;min-height:40px;padding:0 12px;border:0;border-radius:20px;background:transparent;color:var(--ink-2);margin-left:auto}
 .btn-more:hover{background:#EEF1EF}
 .btn-more[aria-expanded="true"] svg{transform:rotate(180deg)}
-.menu{display:flex;flex-direction:column;padding:4px;border:1px solid var(--panel-line);border-radius:10px;background:#fff;box-shadow:0 6px 16px rgba(23,40,34,.12);animation:dalm-drop .16s ease-out}
+.menu{display:flex;flex-direction:column;padding:4px;border:1px solid var(--panel-line);border-radius:10px;background:#fff;box-shadow:0 6px 16px rgba(23,40,34,.12)}
+.menu.opening{animation:dalm-drop .16s ease-out}
 .menu-item{text-align:left;font-size:13.5px;min-height:36px;padding:0 12px;border:0;border-radius:8px;background:transparent;color:var(--ink)}
 .menu-item:hover{background:var(--green-50)}
 .srcs{display:flex;flex-direction:column;gap:6px}
@@ -308,20 +325,12 @@ button.row-head:hover{background:#F1F4F2}
 .enter .send-tip{animation:dalm-drop .16s ease-out}
 .field{display:flex;align-items:center;gap:8px}
 .field label{flex:0 0 auto;width:118px;font-size:12.5px;color:var(--amber-text)}
-.field input,.edit input{flex:1 1 auto;min-width:0;font:inherit;font-size:13.5px;padding:0 10px;min-height:34px;border:1px solid var(--amber-field-line);border-radius:8px;background:var(--amber-field);color:var(--ink)}
+.field input{flex:1 1 auto;min-width:0;font:inherit;font-size:13.5px;padding:0 10px;min-height:34px;border:1px solid var(--amber-field-line);border-radius:8px;background:var(--amber-field);color:var(--ink)}
 .field input.filled{border-color:#C4CDC8;background:#fff}
 .message{font-size:13px;font-weight:600;color:var(--green-700)}
 .message.warn{color:var(--amber-text)}
 .persist{display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--ink-3)}
 .persist input{width:15px;height:15px;margin:2px 0 0;accent-color:var(--green-700)}
-.edit-head{padding:12px 18px;border-bottom:1px solid var(--panel-line);display:flex;flex-direction:column;gap:2px}
-.edit-head strong{font-size:15px;color:var(--green-900)}
-.edit-head span{font-size:13px;color:var(--ink-2)}
-.edit{display:flex;gap:6px;align-items:center}
-.edit input{border-color:#C4CDC8;background:#fff;min-height:38px;padding:0 12px}
-.edit input.new{border-style:dashed;border-color:var(--green-300)}
-.btn-danger{flex:0 0 auto;font-size:12.5px;font-weight:600;padding:0 10px;min-height:38px;border-radius:8px;border:1px solid var(--danger-line);background:#fff;color:var(--danger-ink)}
-.btn-add{flex:0 0 auto;font-size:12.5px;font-weight:600;padding:0 12px;min-height:38px;border-radius:8px;border:1px solid var(--green-300);background:#fff;color:var(--green-700)}
 
 .guide{background:#fff;border:1px solid var(--green-200);border-radius:16px;box-shadow:0 12px 32px rgba(23,40,34,.22);padding:20px 22px;display:flex;flex-direction:column;gap:14px}
 .eyebrow{font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--green-700)}
@@ -383,7 +392,9 @@ const ICON_SHAPES = {
   question: '<path d="M8.5 8a3.5 3.5 0 1 1 5.25 3.03C12.7 11.63 12 12.4 12 13.6v1.4"/><circle cx="12" cy="19.5" r="1.25" fill="currentColor" stroke="none"/>',
   robot: '<path d="M12 8V5.5"/><circle cx="12" cy="3.5" r="1.5"/><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M2 12.5v3"/><path d="M22 12.5v3"/><circle cx="9" cy="13" r="1.25" fill="currentColor" stroke="none"/><circle cx="15" cy="13" r="1.25" fill="currentColor" stroke="none"/><path d="M10 16.5h4"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>',
-  chevron: '<path d="M6 9l6 6 6-6"/>'
+  chevron: '<path d="M6 9l6 6 6-6"/>',
+  remove: '<circle cx="12" cy="12" r="9"/><path d="M8 12h8"/>',
+  add: '<circle cx="12" cy="12" r="9"/><path d="M8 12h8M12 8v8"/>'
 }
 const ICON = (name, s) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_SHAPES[name]}</svg>`
 
@@ -499,6 +510,11 @@ function createAssistant(replyBox) {
   // the reply scrolls, hidden when it is out of view); the panel docks to the
   // right edge of the window, below Gmail's top bar, and stays put.
   function position() {
+    placeHost()
+    drawMarks()
+  }
+
+  function placeHost() {
     if (!replyBox.isConnected) return
     const clip = scroller ? scroller.getBoundingClientRect() : { top: 0, bottom: window.innerHeight }
     const viewportWidth = document.documentElement.clientWidth
@@ -531,6 +547,80 @@ function createAssistant(replyBox) {
     host.style.top = `${top}px`
     host.style.right = `${viewportWidth - r.right + EDGE}px`
     host.style.width = S.view === 'ready' ? `${Math.min(BAR_WIDTH, r.width - 2 * EDGE)}px` : 'auto'
+  }
+
+  // --- Linked colours between the plan and the email (REDESIGN_PLAN.md E4) ---
+  // Each point has a muted colour: a dot in the panel, and a thin bar in the
+  // email's margin next to the section the extension placed for it (the
+  // assistant's paragraph or the person's slot). Empty slots also get a dashed
+  // outline. Everything is drawn in a transparent layer over the email, as
+  // LanguageTool draws its underlines, so the email itself never changes.
+  // Hovering a point outlines its section; hovering a section highlights its
+  // point. Only sections the extension placed are linked.
+  const PALETTE = ['#3E8E6E', '#4A74B5', '#B7743A', '#8A5BB0', '#3E8F96', '#A85C7A']
+  const colorOf = (id) => {
+    const i = S.points.findIndex((p) => p.id === id)
+    return PALETTE[Math.max(0, i) % PALETTE.length]
+  }
+  const tint = (hex, a) => `rgba(${parseInt(hex.slice(1, 3), 16)},${parseInt(hex.slice(3, 5), 16)},${parseInt(hex.slice(5, 7), 16)},${a})`
+  let hoverId = null
+
+  const marks = document.createElement('div')
+  marks.dataset.dalmHost = ''
+  Object.assign(marks.style, { zIndex: '989', pointerEvents: 'none', overflow: 'hidden', display: 'none' })
+  document.body.appendChild(marks)
+
+  function drawMarks() {
+    if (!S.hadList || !blocks.size || !replyBox.isConnected || !replyBox.getBoundingClientRect().width) { marks.style.display = 'none'; return }
+    // Clip to the visible part of the conversation, so marks never float over
+    // Gmail's header when the reply is scrolled.
+    const clip = scroller ? scroller.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }
+    Object.assign(marks.style, { display: '', left: `${clip.left}px`, top: `${clip.top}px`, width: `${clip.width}px`, height: `${clip.height}px` })
+    let html = ''
+    for (const [id, b] of blocks) {
+      if (!b.el.isConnected) continue
+      const r = b.el.getBoundingClientRect()
+      if (!r.height) continue
+      const top = r.top - clip.top
+      const left = r.left - clip.left
+      const c = colorOf(id)
+      const hot = hoverId === id
+      const empty = b.kind === 'slot' && untouched(b)
+      html += `<div style="position:absolute;left:${left - 10}px;top:${top}px;width:3px;height:${r.height}px;border-radius:2px;background:${c};opacity:${hot ? 1 : 0.55}"></div>`
+      if (hot || empty) {
+        html += `<div style="position:absolute;left:${left - 5}px;top:${top - 2}px;width:${r.width + 10}px;height:${r.height + 4}px;border-radius:6px;border:1.5px ${empty && !hot ? 'dashed' : 'solid'} ${c};background:${hot ? tint(c, 0.08) : 'transparent'};box-sizing:border-box"></div>`
+      }
+    }
+    marks.innerHTML = html
+  }
+
+  function setHover(id) {
+    if (id === hoverId) return
+    hoverId = id
+    drawMarks()
+    for (const li of root.querySelectorAll('.row-item[data-pid]')) li.classList.toggle('hl', li.dataset.pid === id)
+  }
+
+  // Hover from the panel…
+  root.addEventListener('mouseover', (e) => {
+    const li = e.target.closest('.row-item[data-pid]')
+    setHover(li && blocks.has(li.dataset.pid) ? li.dataset.pid : null)
+  })
+  host.addEventListener('mouseleave', () => setHover(null))
+  // …and from the email.
+  replyBox.addEventListener('mousemove', (e) => {
+    let found = null
+    for (const [id, b] of blocks) if (b.el.isConnected && b.el.contains(e.target)) { found = id; break }
+    setHover(found)
+  })
+  replyBox.addEventListener('mouseleave', () => setHover(null))
+
+  // Opening a point brings its section into view if it's out of sight.
+  function scrollToSection(id) {
+    const b = blocks.get(id)
+    if (!b || !b.el.isConnected) return
+    const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    b.el.scrollIntoView({ block: 'nearest', behavior: reduced ? 'auto' : 'smooth' })
   }
 
   // Dragging the panel by its header (not by its buttons). Listening on the
@@ -575,10 +665,28 @@ function createAssistant(replyBox) {
     if (!positionFrame) positionFrame = requestAnimationFrame(() => { positionFrame = 0; position() })
   }
 
+  // The panel is redrawn on every state change (each keystroke in a field,
+  // each status change, typing in the email). Keep the list's scroll position
+  // across redraws on the same screen, and play small opening animations only
+  // when something actually opens, not on every redraw.
+  let lastScreen = null
+  let lastOpenId = null
+  let lastMoreOpen = false
+  let openingId = null
+  let moreOpening = false
+
   function render() {
     const active = root.activeElement && root.activeElement.id
       ? { id: root.activeElement.id, pos: root.activeElement.selectionStart }
       : null
+    const body = root.querySelector('.panel-body')
+    const scrollTop = body ? body.scrollTop : 0
+    const screen = S.view
+
+    openingId = S.openId !== lastOpenId ? S.openId : null
+    moreOpening = !!S.moreOpen && !lastMoreOpen
+    lastOpenId = S.openId
+    lastMoreOpen = !!S.moreOpen
 
     let h = ''
     if (S.view === 'ready') h = renderBar()
@@ -590,12 +698,15 @@ function createAssistant(replyBox) {
     const enter = shown !== lastShown
     lastShown = shown
     root.innerHTML = `<style>${UI_CSS}</style><div class="root ${enter ? 'enter' : ''}">${h}</div>`
+    const newBody = root.querySelector('.panel-body')
+    if (newBody && screen === lastScreen) newBody.scrollTop = scrollTop
+    lastScreen = screen
     position()
 
     if (active) {
       const el = root.getElementById(active.id)
       if (el) {
-        el.focus()
+        el.focus({ preventScroll: true })
         if (el.setSelectionRange && active.pos != null) el.setSelectionRange(active.pos, active.pos)
       }
     }
@@ -634,14 +745,6 @@ function createAssistant(replyBox) {
         `<div><button class="btn-secondary" data-a="cancel">Cancelar</button></div></div></aside>`
     }
 
-    if (S.editing) {
-      return h + `<div class="edit-head"><strong>A editar a lista</strong><span>Mude o texto, apague ou acrescente pontos. A lista é sua.</span></div>
-        <div class="panel-body" style="gap:8px">` +
-        S.points.map((p) => `<div class="edit"><input id="edit-${p.id}" aria-label="Ponto da lista" value="${esc(p.title + ': ' + p.desc)}" data-edit="${p.id}"><button class="btn-danger" data-a="removePoint" data-id="${p.id}">Apagar</button></div>`).join('') +
-        `<form class="edit" data-form="add"><input id="new-point" class="new" aria-label="Novo ponto" placeholder="Novo ponto, ex.: Contacto: indicar a quem perguntar" value="${esc(S.newText)}" data-new="1"><button class="btn-add" type="submit">Acrescentar</button></form></div>
-        <div class="panel-foot" style="flex-direction:row"><button class="btn-primary" style="font-size:14px;min-height:42px" data-a="finishEdit">Concluir</button><button class="btn-quiet" style="font-size:14px" data-a="cancelEdit">Cancelar alterações</button></div></aside>`
-    }
-
     const writing = S.points.some((p) => p.writing)
     const wroteSomething = blocks.size > 0
     const toWrite = pointsToWrite()
@@ -661,9 +764,14 @@ function createAssistant(replyBox) {
       <p class="request"><strong>O pedido:</strong> ${esc(S.request)}</p>
       ${renderNeeds()}
       <div class="section">
-        <div class="section-head"><strong>A resposta deve tratar:</strong><span>${doneCount} de ${S.points.length} feitos</span></div>
-        <span class="hint">O assistente escreve os pontos com <span class="legend">${ICON('robot', 14)}</span>; para os seus <span class="legend">${ICON('user', 14)}</span> deixa um espaço no texto.</span>
-        <ul class="rows">${S.points.map(renderPoint).join('')}</ul></div>
+        <div class="section-head"><strong>Plano de resposta:</strong>
+          ${S.editing
+            ? '<button class="link muted" data-a="cancelEdit">Anular</button><button class="link" data-a="finishEdit">Concluir</button>'
+            : `<span>${doneCount} de ${S.points.length} feitos</span><button class="link" data-a="startEdit">Editar</button>`}</div>
+        <span class="hint">${S.editing
+          ? 'Mude o texto, apague ou acrescente passos. O plano é seu.'
+          : `O assistente escreve os passos com <span class="legend">${ICON('robot', 14)}</span>; nos seus <span class="legend">${ICON('user', 14)}</span> deixa um espaço no texto.`}</span>
+        <ul class="rows">${S.points.map(S.editing ? renderPointEdit : renderPoint).join('')}${S.editing ? renderNewStep() : ''}</ul></div>
       ${S.outside.length ? `<div class="section"><strong style="font-size:14px">Fora do email, faz você:</strong>
         <ul class="rows">${S.outside.map(renderOutside).join('')}</ul></div>` : ''}</div>`
 
@@ -681,17 +789,16 @@ function createAssistant(replyBox) {
     // One obvious next step; everything else lives under "Mais".
     const more = [
       regenerable.length ? '<button class="menu-item" data-a="regenerate">Escrever outra versão</button>' : '',
-      wroteSomething ? '<button class="menu-item" data-a="removeAI">Retirar o texto do assistente</button>' : '',
-      '<button class="menu-item" data-a="startEdit">Editar a lista</button>'
+      wroteSomething ? '<button class="menu-item" data-a="removeAI">Retirar o texto do assistente</button>' : ''
     ].join('')
     const buttons = writing
       ? '<button class="btn-secondary" data-a="cancelWriting">Cancelar</button>'
       : S.genError
       ? '<button class="btn-primary" data-a="retryGenerate">Tentar outra vez</button>'
       : (toWrite.length ? `<button class="btn-primary" data-a="generate">${SPARK(15)} ${wroteSomething ? 'Escrever o que falta' : 'Escrever a resposta'}</button>` : '') +
-        `<button class="btn-more" data-a="toggleMore" aria-expanded="${!!S.moreOpen}" aria-haspopup="true">Mais ${ICON('chevron', 14)}</button>`
+        (more ? `<button class="btn-more" data-a="toggleMore" aria-expanded="${!!S.moreOpen}" aria-haspopup="true">Mais ${ICON('chevron', 14)}</button>` : '')
 
-    h += `<div class="panel-foot">${S.moreOpen && !writing ? `<div class="menu" role="menu">${more}</div>` : ''}
+    h += `<div class="panel-foot">${S.moreOpen && !writing ? `<div class="menu ${moreOpening ? 'opening' : ''}" role="menu">${more}</div>` : ''}
       ${msg ? `<span class="message ${warn ? 'warn' : ''}" role="status">${msg}</span>` : ''}<div class="row">${buttons}</div></div></aside>`
     return h
   }
@@ -749,10 +856,11 @@ function createAssistant(replyBox) {
     const isAI = p.owner === 'ai'
     const open = S.openId === p.id
     const owner = isAI ? 'o assistente' : 'você'
-    return `<li class="row-item ${open ? 'open' : ''}">
+    return `<li class="row-item ${open ? 'open' : ''} ${openingId === p.id ? 'opening' : ''} ${hoverId === p.id ? 'hl' : ''}" data-pid="${p.id}" style="--pc:${colorOf(p.id)}">
       <button class="row-head" data-a="toggleRow" data-id="${p.id}" aria-expanded="${open}">
         <span class="state ${state}" role="img" aria-label="${STATE_LABEL[state]}">${STATE_ICON[state]}</span>
-        <span class="row-title ${state === 'done' ? 'done' : ''}">${esc(p.title)}</span>
+        <span class="pnum" aria-hidden="true">${S.points.indexOf(p) + 1}</span>
+        <span class="row-text"><span class="row-title ${state === 'done' ? 'done' : ''}">${esc(p.title)}</span>${p.desc ? `<span class="row-sub">${esc(p.desc)}</span>` : ''}</span>
         <span class="row-owner ${isAI ? 'ai' : ''}" title="Escreve: ${owner}">${ICON(isAI ? 'robot' : 'user', 15)}</span>
         <span class="chev" aria-hidden="true">${ICON('chevron', 14)}</span>
       </button>
@@ -780,7 +888,6 @@ function createAssistant(replyBox) {
     }
     if (!isAI && missing.length && state !== 'done') out += ` · não encontrei: ${missing.map((n) => esc(n.label)).join(', ')}`
     return `<div class="row-body">
-      <p class="row-desc">${esc(p.desc)}</p>
       ${renderSources(p)}
       <div class="seg" role="group" aria-label="Quem escreve «${esc(p.title)}»" ${locked ? `title="Retire o texto do assistente para mudar"` : ''}>
         <button data-a="setOwner" data-owner="user" data-id="${p.id}" aria-pressed="${!isAI}" ${locked ? 'disabled' : ''}>${ICON('user', 15)} Você</button>
@@ -788,6 +895,33 @@ function createAssistant(replyBox) {
       </div>
       <div class="out"><span>↳ ${out}</span>${action}</div>
     </div>`
+  }
+
+  // Editing the plan in place: each step's title and description become
+  // fields, with ⊖ to delete it, and an empty last line with ⊕ to add one.
+  // Changes apply as they are typed; "Anular" restores the plan as it was.
+  function renderPointEdit(p) {
+    const n = S.points.indexOf(p) + 1
+    return `<li class="row-item editing" data-pid="${p.id}" style="--pc:${colorOf(p.id)}">
+      <div class="row-head static">
+        <span class="pnum" aria-hidden="true">${n}</span>
+        <span class="edit-fields">
+          <input id="et-${p.id}" class="edit-title" value="${esc(p.title)}" placeholder="Título do passo" aria-label="Título do passo ${n}" data-edit-field="title" data-id="${p.id}">
+          <input id="ed-${p.id}" class="edit-desc" value="${esc(p.desc)}" placeholder="O que a resposta deve fazer" aria-label="Descrição do passo ${n}" data-edit-field="desc" data-id="${p.id}">
+        </span>
+        <button class="icon-btn" data-a="removePoint" data-id="${p.id}" aria-label="Apagar «${esc(p.title)}»" title="Apagar">${ICON('remove', 22)}</button>
+      </div>
+    </li>`
+  }
+
+  function renderNewStep() {
+    return `<li class="row-item editing">
+      <form class="row-head static" data-form="add">
+        <span class="pnum ghost" aria-hidden="true">${S.points.length + 1}</span>
+        <span class="edit-fields"><input id="new-step" class="edit-title" value="${esc(S.newText)}" placeholder="Novo passo, ex.: Indicar a quem contactar" aria-label="Novo passo" data-new="1"></span>
+        <button class="icon-btn add" type="submit" aria-label="Acrescentar passo" title="Acrescentar">${ICON('add', 22)}</button>
+      </form>
+    </li>`
   }
 
   // Where a point came from (REDESIGN_PLAN.md E5), so people can judge it:
@@ -1094,7 +1228,11 @@ function createAssistant(replyBox) {
     retry: () => S.retry && actions[S.retry](),
     openHelp: () => showGuide(),
     toggleSteps: () => set({ stepsOpen: !S.stepsOpen }),
-    toggleRow: (el) => set({ openId: S.openId === el.dataset.id ? null : el.dataset.id }),
+    toggleRow: (el) => {
+      const opening = S.openId !== el.dataset.id
+      set({ openId: opening ? el.dataset.id : null })
+      if (opening) scrollToSection(el.dataset.id)
+    },
     toggleMore: () => set({ moreOpen: !S.moreOpen }),
     setOwner: (el) => updateItem(el, { owner: el.dataset.owner }),
     markDone: (el) => updateItem(el, { done: true }),
@@ -1108,10 +1246,30 @@ function createAssistant(replyBox) {
       set({ moreOpen: false, points: S.points.map((p) => p.ai ? { ...p, ai: false } : p) })
       syncWithEmail()
     },
-    startEdit: () => set({ editing: true, snapshot: S.points, moreOpen: false }),
-    finishEdit: () => set({ editing: false }),
-    cancelEdit: () => set({ editing: false, points: S.snapshot || S.points }),
-    removePoint: (el) => set({ points: S.points.filter((p) => p.id !== el.dataset.id) })
+    startEdit: () => set({ editing: true, snapshot: S.points, newText: '', openId: null, moreOpen: false }),
+    finishEdit: () => set({ editing: false, newText: '' }),
+    // Restores the plan's text. A deleted step's section can't come back to
+    // the email, so a restored step without one is "not written" again.
+    cancelEdit: () => set({
+      editing: false,
+      newText: '',
+      points: (S.snapshot || S.points).map((p) => blocks.has(p.id) ? p : { ...p, ai: false, done: p.ai ? false : p.done })
+    }),
+    // Deleting a step also removes its section from the email, but only if
+    // it is untouched (the assistant's text as written, or an empty slot).
+    removePoint: (el) => {
+      const id = el.dataset.id
+      const b = blocks.get(id)
+      if (b) {
+        if (b.el.isConnected && untouched(b)) {
+          b.el.remove()
+          if (b.gap.isConnected && !b.gap.textContent.trim()) b.gap.remove()
+        }
+        blocks.delete(id)
+      }
+      set({ points: S.points.filter((p) => p.id !== id) })
+      if (b) tellGmail()
+    }
   }
 
   root.addEventListener('click', (e) => {
@@ -1125,20 +1283,17 @@ function createAssistant(replyBox) {
       set({ values: { ...S.values, [t.dataset.key]: t.value } })
       refillParagraphs()
     }
-    else if (t.dataset.edit) {
-      const v = t.value
-      const i = v.indexOf(':')
-      const patch = i >= 0 ? { title: v.slice(0, i).trim(), desc: v.slice(i + 1).trim() } : { title: v.trim(), desc: '' }
-      set({ points: S.points.map((p) => p.id === t.dataset.edit ? { ...p, ...patch } : p) })
+    else if (t.dataset.editField) {
+      set({ points: S.points.map((p) => p.id === t.dataset.id ? { ...p, [t.dataset.editField]: t.value } : p) })
     } else if (t.dataset.new) set({ newText: t.value })
   })
+  // A new step starts as the person's, with its text as the title; its
+  // description can be filled in on its own line right away.
   root.addEventListener('submit', (e) => {
     e.preventDefault()
-    const v = S.newText.trim()
-    if (!v) return
-    const i = v.indexOf(':')
-    const item = i >= 0 ? { title: v.slice(0, i).trim(), desc: v.slice(i + 1).trim() } : { title: v, desc: '' }
-    set({ newText: '', points: S.points.concat([{ id: 'n' + Date.now(), needs: [], owner: 'user', sourceIds: [], done: false, ai: false, writing: false, ...item }]) })
+    const title = S.newText.trim()
+    if (!title) return
+    set({ newText: '', points: S.points.concat([{ id: 'n' + Date.now(), title, desc: '', needs: [], owner: 'user', sourceIds: [], done: false, ai: false, writing: false }]) })
   })
 
   // Typing in the reply collapses the ready bar into "Mostrar assistente".
@@ -1202,6 +1357,7 @@ function createAssistant(replyBox) {
     document.removeEventListener('focusin', onOver, true)
     document.removeEventListener('focusout', hideTip, true)
     if (tip) tip.remove()
+    marks.remove()
     host.remove()
   }, 1000)
 

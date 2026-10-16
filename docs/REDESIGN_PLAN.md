@@ -1,6 +1,6 @@
 # Redesign plan after the heuristic evaluation (draft)
 
-Status: **agreed** (decisions below). **Built:** E1, E2, E3, E7, the Enviar reminder and E5 (2026-10-16, see `HANDOFF.md` 14.3); backend B1–B4, B6, B7 live (v0.3). **Next:** E4, then E6. When agreed, contract changes go into `docs/BACKEND_SPEC.md` and UI changes into `docs/handoff/HANDOFF.md` section 14.
+Status: **agreed** (decisions below). **Built:** E1, E2, E3, E7, the Enviar reminder, E5 and E4 (2026-10-16, see `HANDOFF.md` 14.3); backend B1–B4, B6, B7 live (v0.4). **Next:** E6 (plain wording and expectations). When agreed, contract changes go into `docs/BACKEND_SPEC.md` and UI changes into `docs/handoff/HANDOFF.md` section 14.
 
 ## Findings (Pedro's evaluation)
 
