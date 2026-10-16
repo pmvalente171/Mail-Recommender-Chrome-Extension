@@ -30,6 +30,7 @@ Everything is in **European Portuguese** (pt-PT).
 These come from the study design and are not negotiable.
 
 1. **Never invent facts.** Numbers of places, grades, dates, deadlines, fees, names of offices or people, rules: if a fact is not in a source you actually retrieved, do not write it. Put it in `needs` (in `/list`) and as a **slot** (in `/generate`). A blank the person fills is correct behaviour; a plausible guess is a failure.
+   **Be conservative with what past answers say.** Past answers can be out of date. Never assert from them that something does **not** exist or apply (e.g. "the course doesn't exist"); make it a need or a point for the person. Deadlines, academic years and amounts taken from answers tagged `TEMPORAL_*`, `REG_AMOUNT` or `REG_EDITAL` become needs unless clearly current. Once sources carry dates, answers older than **24 months** count as unconfirmed.
 2. **Say what you used.** `/list` returns the names of the sources actually used (`sources`). Never list a source you did not use.
 3. **The AI does not act or decide.** It never certifies, graduates or confirms that a student completed something, and it never claims to have done anything in CLIP, SinGAP, Gesdoc or any other system. Points that involve such judgements are suggested as the **person's** (`"owner": "user"`), and actions in those systems go in `outside`.
 4. **Personal data.** The thread arrives already redacted (section 3). Do not try to recover redacted values. Do not store thread text beyond the request, and do not log it, unless a participant has explicitly consented to text logging (`/config`, section 6).
@@ -111,8 +112,9 @@ Called when the person clicks **Preparar a lista** (or automatically when a repl
       "id": "c2",
       "title": "Vagas",
       "desc": "dizer quantas vagas há no concurso de 2026/27.",
-      "needs": [ { "key": "vagas", "label": "N.º de vagas" } ],
-      "owner": "ai"
+      "needs": [ { "key": "vagas", "label": "N.º de vagas em 2026/27" } ],
+      "owner": "ai",
+      "source_ids": ["s1"]
     },
     {
       "id": "c3",
@@ -120,23 +122,34 @@ Called when the person clicks **Preparar a lista** (or automatically when a repl
       "desc": "indicar as provas de ingresso e a nota mínima.",
       "needs": [
         { "key": "provas", "label": "Provas de ingresso" },
-        { "key": "nota", "label": "Nota mínima" }
+        { "key": "nota", "label": "Nota mínima de candidatura" }
       ],
-      "owner": "ai"
+      "owner": "ai",
+      "source_ids": ["s1", "s2"]
     },
     {
       "id": "c5",
       "title": "Site",
       "desc": "lamentar que a informação ainda não esteja no nosso site.",
       "needs": [],
-      "owner": "user"
+      "owner": "user",
+      "source_ids": []
     }
   ],
   "outside": [
     { "id": "o1", "text": "Pedir à equipa do site que publique a página do curso." }
   ],
-  "steps": ["Li o email", "Percebi o pedido", "Procurei a informação nas fontes a que tenho acesso"],
-  "sources": ["Regulamento de Acesso 2026/27", "Página da DGES do curso"]
+  "steps": ["Li o email", "Percebi o pedido", "Procurei a informação nas respostas anteriores da DALM"],
+  "sources": [
+    "Resposta anterior da DALM: «Como posso aceder à Licenciatura em Análise e Engenharia de Dados?»",
+    "Resposta anterior da DALM: «Quais as condições de acesso à licenciatura?»"
+  ],
+  "source_details": [
+    { "id": "s1", "question": "Como posso aceder à Licenciatura em Análise e Engenharia de Dados?",
+      "excerpt": "…verbatim snippet of the staff reply, at most 200 characters…", "date": null },
+    { "id": "s2", "question": "Quais as condições de acesso à licenciatura?",
+      "excerpt": "…", "date": null }
+  ]
 }
 ```
 
@@ -144,17 +157,19 @@ Called when the person clicks **Preparar a lista** (or automatically when a repl
 |---|---|---|
 | `in_scope` | boolean | `false` if the email is not something the Academic Division answers (spam, personal, another service). Then return `points: []` and `outside: []`, and use `request_summary` to say briefly what the email is. The extension does not show a special message for this yet. It shows the summary and an empty list. |
 | `request_summary` | string | **One sentence**, starting in lowercase, completing "O pedido: …". Describe who asks what, without personal data. Shown verbatim. |
-| `points` | array | What the reply must cover, in the order the reply should follow. Usually 2–6. Do not include greeting, thanks or sign-off. |
+| `points` | array | What the reply must cover, in the order the reply should follow. **1–4 points** (enforced). Merge points that cover the same idea; no points that restate the question or describe the system's own uncertainty. Do not include greeting, thanks or sign-off. |
 | `points[].id` | string | Unique within the list. Short, e.g. `c1`, `c2`. Sent back to `/generate`. |
-| `points[].title` | string | 1–3 words, capitalised: "Vagas", "Condições de acesso". Shown in bold before the description. |
-| `points[].desc` | string | Starts in lowercase with an infinitive verb and ends with a full stop: "dizer quantas vagas…", "indicar…", "explicar…", "lamentar…". Shown as "**Title**: desc". |
-| `points[].needs` | array | Facts the reply needs that you **could not find in your sources**. Empty if you found everything or the point needs no facts. |
+| `points[].title` | string | 1–3 everyday words, capitalised: "Vagas", "Condições de acesso". Shown as the point's one-line label. |
+| `points[].desc` | string | At most ~12 words. Starts in lowercase with an infinitive verb and ends with a full stop: "dizer quantas vagas…", "indicar…", "explicar…", "lamentar…". Shown when the point is opened. |
+| `points[].needs` | array | Facts the reply needs that you **could not find in your sources**, or found only in old or time-sensitive answers (rule 1). Empty if you found everything or the point needs no facts. **At most ~4 needs in the whole list**: if more facts are uncertain, give the point to the person (`"owner": "user"`) instead of adding blanks. |
 | `needs[].key` | string | **Must match `^[a-z0-9_]+$`** (it is used as an HTML id). Keys are **global to the list**: if two points need the same fact, use the same key and the person types it once. Different facts need different keys. |
-| `needs[].label` | string | Short label in pt-PT, capitalised, shown next to the input: "N.º de vagas", "Datas da 1.ª fase". |
+| `needs[].label` | string | Short label in pt-PT, capitalised, phrased as **what the person fills in**, specific enough to answer without rereading the email: "N.º de vagas em 2026/27", "Datas da 1.ª fase". |
 | `points[].owner` | `"ai"` or `"user"` | Your **suggestion** of who handles the point. The person can switch it. If missing or anything else, the extension treats it as `"user"`. See the guidelines below. |
 | `outside` | array | Tasks the person must do **outside the email**: in CLIP, SinGAP, Gesdoc, or by asking a colleague or service. Each `{ "id": "o1", "text": "…" }`, `text` an imperative sentence in pt-PT. Never things the AI can do. Can be empty. |
 | `steps` | array of strings | What you did, past tense, first person, pt-PT. Shown under "Ver passos". The extension adds the line "Não encontrei N informações" itself, so do not include it. |
-| `sources` | array of strings | Human-readable names of the sources actually used (documents, pages, regulations). Shown as "Fontes: …". Empty if none. |
+| `points[].source_ids` | array of strings | Ids from `source_details` of the retrieved answers that support this point. `[]` when no source supports it (then it is mostly needs). |
+| `sources` | array of strings | Human-readable names of the sources actually used, at most 3, each under ~100 characters, e.g. "Resposta anterior da DALM: «…»". Shown as "Fontes: …". Same order as `source_details`. Empty if none. |
+| `source_details` | array | One object per source: `id` (`s1`, `s2`…), `question` (the matched past question), `excerpt` (**verbatim** snippet of the staff's past reply, at most 200 characters, never a paraphrase), `date` (ISO date of that reply, or `null` while the index has no dates). Shown when a point is opened, so people can judge where it came from. Never include ticket ids. |
 
 **Guidelines for `owner`:**
 - `"ai"` for **recurring, factual** points answered from documents: dates, places, requirements, procedures, where to apply, which form to use. This is what staff most want help with.
@@ -329,3 +344,9 @@ curl -s localhost:4000/generate -H 'Content-Type: application/json' -d '{
 - [ ] Edited and added points are written as edited. `context_points` are not written.
 - [ ] Thread text is not written to logs or disk. `/log` stores metadata only.
 - [ ] The model API key is only on the server.
+
+---
+
+## Revision history
+
+- **2026-10-16, after the heuristic evaluation** (agreed by Pedro and both sessions; plan in `docs/REDESIGN_PLAN.md`): `/list` returns 1–4 points with short titles and descriptions; at most ~4 needs per list, with labels phrased as what to fill in; conservative use of past answers (rule 1); new additive fields `points[].source_ids` and `source_details`. Nothing existing was removed or renamed.

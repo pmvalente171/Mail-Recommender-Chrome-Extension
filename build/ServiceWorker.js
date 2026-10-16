@@ -94,14 +94,15 @@ async function mockList(payload) {
     // owner: the backend's suggestion of who handles each point ('ai' or
     // 'user'); the person can switch it in the panel.
     points: [
-      { id: 'c2', title: 'Vagas', desc: 'dizer quantas vagas há no concurso de 2026/27.', needs: [{ key: 'vagas', label: 'N.º de vagas' }], owner: 'ai' },
-      { id: 'c3', title: 'Condições de acesso', desc: 'indicar as provas de ingresso e a nota mínima.', needs: [{ key: 'provas', label: 'Provas de ingresso' }, { key: 'nota', label: 'Nota mínima' }], owner: 'ai' },
-      { id: 'c4', title: 'Candidatura', desc: 'explicar onde e quando se candidata.', needs: [{ key: 'datas', label: 'Datas da 1.ª fase' }], owner: 'ai' },
-      { id: 'c5', title: 'Site', desc: 'lamentar que a informação ainda não esteja no nosso site.', needs: [], owner: 'user' }
+      { id: 'c2', title: 'Vagas', desc: 'dizer quantas vagas há no concurso de 2026/27.', needs: [{ key: 'vagas', label: 'N.º de vagas' }], owner: 'ai', source_ids: ['s1'] },
+      { id: 'c3', title: 'Condições de acesso', desc: 'indicar as provas de ingresso e a nota mínima.', needs: [{ key: 'provas', label: 'Provas de ingresso' }, { key: 'nota', label: 'Nota mínima' }], owner: 'ai', source_ids: ['s1'] },
+      { id: 'c4', title: 'Candidatura', desc: 'explicar onde e quando se candidata.', needs: [{ key: 'datas', label: 'Datas da 1.ª fase' }], owner: 'ai', source_ids: [] },
+      { id: 'c5', title: 'Site', desc: 'lamentar que a informação ainda não esteja no nosso site.', needs: [], owner: 'user', source_ids: [] }
     ],
     outside: [{ id: 'o1', text: 'Pedir à equipa do site que publique a página do curso.' }],
     steps,
-    sources: ['Exemplo do protótipo (resposta simulada, sem backend)']
+    sources: ['Resposta anterior da DALM: «Quais as condições de acesso à licenciatura?» (simulada)'],
+    source_details: [{ id: 's1', question: 'Quais as condições de acesso à licenciatura? (simulada)', excerpt: 'As condições de acesso estão publicadas na página do curso e no site da DGES… (texto simulado)', date: null }]
   }
 }
 

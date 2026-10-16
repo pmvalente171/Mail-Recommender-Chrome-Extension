@@ -100,7 +100,15 @@ async function sha256(text) {
 }
 
 // --- Backend (through the service worker) -----------------------------------
+// When the extension is reloaded or updated, the copy of this script already
+// running in an open Gmail tab is cut off from it: chrome.runtime goes away
+// and any extension call throws. Check before calling, and stop quietly.
+function extensionAlive() {
+  try { return !!(chrome.runtime && chrome.runtime.id) } catch (e) { return false }
+}
+
 async function callBackend(type, payload) {
+  if (!extensionAlive()) throw new Error('Extension reloaded')
   const response = await chrome.runtime.sendMessage({ type, payload })
   if (!response || !response.ok) throw new Error(response ? response.error : 'No response')
   return response.data
@@ -110,6 +118,7 @@ async function callBackend(type, payload) {
 // ticket that were sent, and the requester's name for the greeting, which
 // stays in the browser.
 async function requestList(replyBox) {
+  if (!extensionAlive()) throw new Error('Extension reloaded')
   const thread = readThread(replyBox)
   if (!thread || !thread.text) throw new Error('No thread text')
   const names = thread.messages.map((m) => m.from).filter(Boolean)
@@ -129,7 +138,9 @@ async function requestGenerate(payload) {
 const TEMPLATE = {
   greeting: (name) => name ? `Caro(a) ${name},` : 'Caro(a) Senhor(a),',
   thanks: 'Obrigado pelo seu contacto.',
-  signoff: ['Com os melhores cumprimentos,', 'Divisão Académica']
+  signoff: ['Com os melhores cumprimentos,', 'Divisão Académica'],
+  // The line left in the email for a point the person writes themselves.
+  slot: (point) => `[Escreva aqui: ${(point.desc || point.title).replace(/\.\s*$/, '')}]`
 }
 // Gmail's own signature and quoted text: the assistant's text goes above them.
 const GMAIL_TAIL = '.gmail_signature, .gmail_signature_prefix, .gmail_quote, .gmail_extra'
@@ -143,8 +154,14 @@ function normalizeList(list) {
     points: (list.points || []).map((p, i) => ({
       id: String(p.id || `p${i}`), title: p.title || '', desc: p.desc || '',
       needs: p.needs || [], owner: p.owner === 'ai' ? 'ai' : 'user',
+      sourceIds: (p.source_ids || []).map(String),
       done: false, ai: false, writing: false
     })),
+    // The past answers behind the points: the matched question, a verbatim
+    // excerpt of the staff's reply, and its date when the index has one.
+    sourceDetails: (list.source_details || [])
+      .filter((s) => s && s.id && s.excerpt)
+      .map((s) => ({ id: String(s.id), question: s.question || '', excerpt: s.excerpt, date: s.date || null })),
     outside: (list.outside || []).map((o, i) => ({ id: String(o.id || `o${i}`), text: o.text || '', done: false })),
     steps: list.steps || [],
     sources: list.sources || []
@@ -157,6 +174,7 @@ const STEP_DELAY_MS = 650
 // Short plain messages for failures (HANDOFF.md open issue 8).
 function errorMessage(err) {
   if (err && err.message === 'No thread text') return 'Não consegui ler o email desta conversa.'
+  if (err && err.message === 'Extension reloaded') return 'A extensão foi atualizada. Recarregue o Gmail para continuar.'
   if (!navigator.onLine) return 'Sem ligação à internet.'
   return 'Não foi possível contactar o assistente.'
 }
@@ -170,7 +188,7 @@ const prefsReady = chrome.storage.sync.get({ guideSeen: false, prepareAlways: fa
 
 function savePref(key, value) {
   prefs[key] = value
-  chrome.storage.sync.set({ [key]: value }).catch(() => {})
+  if (extensionAlive()) chrome.storage.sync.set({ [key]: value }).catch(() => {})
 }
 
 // --- Styles -----------------------------------------------------------------
@@ -245,31 +263,49 @@ button{font-family:inherit;cursor:pointer}
 .section-head span{font-size:12.5px;font-weight:600;color:var(--ink-2);white-space:nowrap}
 .hint{font-size:12.5px;color:var(--ink-3)}
 .legend{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
-.crit{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:12px}
-.crit li{display:flex;gap:8px;align-items:flex-start}
-.state{flex:0 0 auto;width:22px;height:22px;margin-top:9px;display:flex;align-items:center;justify-content:center;color:var(--ink-4)}
+.rows{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:2px}
+.row-item{border-radius:10px}
+.row-item.open{background:#F6F8F7}
+.row-head{width:100%;display:flex;align-items:center;gap:8px;min-height:38px;padding:4px 6px;border:0;border-radius:10px;background:transparent;color:inherit;font:inherit;text-align:left}
+button.row-head:hover{background:#F1F4F2}
+.row-head.static{cursor:default}
+.row-title{flex:1 1 auto;min-width:0;font-size:14px;font-weight:600;color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.row-title.plain{font-weight:400;white-space:normal}
+.row-title.done{color:var(--ink-3)}
+.row-owner{flex:0 0 auto;width:26px;height:26px;border-radius:13px;display:flex;align-items:center;justify-content:center;color:var(--ink-3);background:#EEF1EF}
+.row-owner.ai{color:var(--green-700);background:var(--green-100)}
+.chev{flex:0 0 auto;display:flex;color:var(--ink-4);transition:transform .2s ease}
+.row-item.open .chev{transform:rotate(180deg)}
+.row-body{display:flex;flex-direction:column;gap:8px;padding:0 10px 10px 36px;animation:dalm-drop .18s ease-out}
+.row-desc{margin:0;font-size:13.5px;line-height:1.45;color:var(--ink-2)}
+.state{flex:0 0 auto;width:22px;height:22px;display:flex;align-items:center;justify-content:center;color:var(--ink-4)}
 .state .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
 .state.done{color:var(--green-600)}
 .state.ask{color:var(--amber-line)}
 .state .ring{width:15px;height:15px;border:2px dashed var(--green-700);border-radius:50%}
 .state .spin{width:15px;height:15px;border:2px solid var(--green-200);border-top-color:var(--green-700);border-radius:50%;animation:dalm-spin .8s linear infinite}
 @keyframes dalm-spin{to{transform:rotate(360deg)}}
-.crit-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:6px}
-.card{padding:8px 10px;border-radius:8px;background:#F3F5F4;font-size:14px;line-height:1.45}
-.card.ai{background:var(--green-50);box-shadow:inset 0 0 0 1px var(--green-100)}
-.card.ask{background:#FFF7DD;box-shadow:inset 0 0 0 1px #F1DE9C}
-.card.done{color:var(--ink-3)}
+.seg{display:inline-flex;align-self:flex-start;padding:2px;border-radius:18px;border:1px solid var(--panel-border);background:#fff}
+.seg button{display:inline-flex;align-items:center;gap:6px;min-height:32px;padding:0 12px;border:0;border-radius:16px;background:transparent;color:var(--ink-2);font-size:12.5px;font-weight:600}
+.seg button[aria-pressed="true"]{background:var(--green-700);color:#fff}
+.seg button:disabled{cursor:default;opacity:.55}
 .out{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12.5px;color:var(--ink-3)}
-.out.review{color:var(--green-700);font-weight:600}
-.out.ask{color:var(--amber-text);font-weight:600}
-.act{font-size:12.5px;font-weight:600;min-height:34px;padding:0 12px;border-radius:17px;border:1px solid var(--green-300);background:#fff;color:var(--green-700)}
+.act{font-size:12.5px;font-weight:600;min-height:32px;padding:0 12px;border-radius:16px;border:1px solid var(--green-300);background:#fff;color:var(--green-700);white-space:nowrap}
 .act.primary{background:var(--green-700);border-color:var(--green-700);color:#fff}
-.owner{flex:0 0 auto;margin-top:4px;display:inline-flex;padding:2px;border-radius:18px;border:1px solid var(--panel-border);background:#fff}
-.owner span{width:30px;height:30px;border-radius:15px;display:flex;align-items:center;justify-content:center;color:var(--ink-4)}
-.owner[aria-checked="true"] .side-ai,.owner[aria-checked="false"] .side-user{background:var(--green-700);color:#fff}
-.owner:disabled{cursor:default;opacity:.6}
-.owner.fixed{border-color:transparent;background:transparent}
-.owner.fixed .side-user{background:var(--green-50);color:var(--green-700)}
+.needs{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;background:#FFF9E8;border:1px solid #F1DE9C}
+.btn-more{display:inline-flex;align-items:center;gap:4px;font-size:13px;font-weight:600;min-height:40px;padding:0 12px;border:0;border-radius:20px;background:transparent;color:var(--ink-2);margin-left:auto}
+.btn-more:hover{background:#EEF1EF}
+.btn-more[aria-expanded="true"] svg{transform:rotate(180deg)}
+.menu{display:flex;flex-direction:column;padding:4px;border:1px solid var(--panel-line);border-radius:10px;background:#fff;box-shadow:0 6px 16px rgba(23,40,34,.12);animation:dalm-drop .16s ease-out}
+.menu-item{text-align:left;font-size:13.5px;min-height:36px;padding:0 12px;border:0;border-radius:8px;background:transparent;color:var(--ink)}
+.menu-item:hover{background:var(--green-50)}
+.srcs{display:flex;flex-direction:column;gap:6px}
+.srcs-head,.srcs-none{font-size:12px;font-weight:600;color:var(--ink-3)}
+.src{margin:0;display:flex;flex-direction:column;gap:3px}
+.src figcaption{font-size:12.5px;font-weight:600;color:var(--ink-2)}
+.src blockquote{margin:0;padding:2px 0 2px 10px;border-left:2px solid var(--green-200);font-size:12.5px;line-height:1.45;color:var(--ink-3)}
+.send-tip{display:flex;align-items:center;gap:8px;max-width:360px;padding:10px 14px;border-radius:10px;background:#FFF9E8;border:1px solid #F1DE9C;color:var(--amber-text);font-size:13px;font-weight:600;box-shadow:0 6px 16px rgba(23,40,34,.16)}
+.enter .send-tip{animation:dalm-drop .16s ease-out}
 .field{display:flex;align-items:center;gap:8px}
 .field label{flex:0 0 auto;width:118px;font-size:12.5px;color:var(--amber-text)}
 .field input,.edit input{flex:1 1 auto;min-width:0;font:inherit;font-size:13.5px;padding:0 10px;min-height:34px;border:1px solid var(--amber-field-line);border-radius:8px;background:var(--amber-field);color:var(--ink)}
@@ -346,7 +382,8 @@ const ICON_SHAPES = {
   check: '<path d="M4.5 12.5l5 5L19.5 7"/>',
   question: '<path d="M8.5 8a3.5 3.5 0 1 1 5.25 3.03C12.7 11.63 12 12.4 12 13.6v1.4"/><circle cx="12" cy="19.5" r="1.25" fill="currentColor" stroke="none"/>',
   robot: '<path d="M12 8V5.5"/><circle cx="12" cy="3.5" r="1.5"/><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M2 12.5v3"/><path d="M22 12.5v3"/><circle cx="9" cy="13" r="1.25" fill="currentColor" stroke="none"/><circle cx="15" cy="13" r="1.25" fill="currentColor" stroke="none"/><path d="M10 16.5h4"/>',
-  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>'
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>',
+  chevron: '<path d="M6 9l6 6 6-6"/>'
 }
 const ICON = (name, s) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_SHAPES[name]}</svg>`
 
@@ -399,7 +436,9 @@ function createAssistant(replyBox) {
     request: '', points: [], outside: [], steps: [], sources: [], values: {},
     editing: false, snapshot: null, newText: '',
     stepTexts: [], stepIdx: 0, stepsOpen: false, hadList: false,
-    error: null, retry: null
+    error: null, retry: null,
+    openId: null, // the list row that is expanded
+    moreOpen: false // the "Mais" menu
   }
   let timer = null
   let workToken = 0 // bumped on cancel, so a late response is ignored
@@ -565,7 +604,7 @@ function createAssistant(replyBox) {
   // Collapsed: a round badge that opens into "Mostrar assistente" on hover or
   // keyboard focus, with the number of points still to do once there is a list.
   function renderBadge() {
-    const pending = S.hadList ? S.points.filter((p) => !p.done).length + S.outside.filter((o) => !o.done).length : 0
+    const pending = S.hadList ? S.points.filter((p) => pointState(p) !== 'done').length + S.outside.filter((o) => !o.done).length : 0
     const count = pending ? `<span class="fab-count" aria-hidden="true">${pending}</span>` : ''
     const label = pending ? `Mostrar assistente (${pending} por fazer)` : 'Mostrar assistente'
     return `<div class="chip-row"><button class="fab" data-a="reopen" aria-label="${label}" title="${label}">
@@ -603,60 +642,92 @@ function createAssistant(replyBox) {
         <div class="panel-foot" style="flex-direction:row"><button class="btn-primary" style="font-size:14px;min-height:42px" data-a="finishEdit">Concluir</button><button class="btn-quiet" style="font-size:14px" data-a="cancelEdit">Cancelar alterações</button></div></aside>`
     }
 
-    const anyAI = S.points.some((p) => p.ai)
     const writing = S.points.some((p) => p.writing)
-    const toWrite = S.points.filter((p) => p.owner === 'ai' && !p.ai && !p.done && !p.writing)
+    const wroteSomething = blocks.size > 0
+    const toWrite = pointsToWrite()
     const regenerable = regenerableIds()
-    const doneCount = S.points.filter((p) => p.done).length
-    const totalNeeds = S.points.reduce((n, p) => n + p.needs.length, 0)
+    const doneCount = S.points.filter((p) => pointState(p) === 'done').length
+    const totalNeeds = aiNeeds().length
     const stepItems = S.steps.map((s) => `<li>${esc(s)}</li>`)
-    if (totalNeeds) stepItems.push(`<li>${totalNeeds === 1 ? 'Não encontrei 1 informação (marcada abaixo)' : `Não encontrei ${totalNeeds} informações (marcadas abaixo)`}</li>`)
+    if (totalNeeds) stepItems.push(`<li>${totalNeeds === 1 ? 'Não encontrei 1 informação (em «Falta saber»)' : `Não encontrei ${totalNeeds} informações (em «Falta saber»)`}</li>`)
     if (S.sources.length) stepItems.push(`<li>Fontes: ${S.sources.map(esc).join('; ')}</li>`)
 
     h += `<div class="panel-body">
       <div style="display:flex;flex-direction:column;gap:6px">
-        <div class="summary">${TICK(15, '#5F8F7C', 2.6)}<span>${anyAI ? 'Escrevi os pontos que me deu' : 'Li o email e preparei esta lista'}</span>
+        <div class="summary">${TICK(15, '#5F8F7C', 2.6)}<span>${wroteSomething ? 'Escrevi a resposta no email' : 'Li o email e preparei esta lista'}</span>
         <button class="link" aria-expanded="${S.stepsOpen}" data-a="toggleSteps">${S.stepsOpen ? 'Esconder passos' : 'Ver passos'}</button></div>
         ${S.stepsOpen ? `<ul class="steplist">${stepItems.join('')}</ul>` : ''}
       </div>
       <p class="request"><strong>O pedido:</strong> ${esc(S.request)}</p>
+      ${renderNeeds()}
       <div class="section">
         <div class="section-head"><strong>A resposta deve tratar:</strong><span>${doneCount} de ${S.points.length} feitos</span></div>
-        <span class="hint">${anyAI ? 'Leia o texto do assistente e confirme cada ponto.' : `Escolha quem trata cada ponto: <span class="legend">${ICON('user', 14)} você</span> ou <span class="legend">${ICON('robot', 14)} o assistente</span>.`}</span>
-        <ul class="crit">${S.points.map(renderPoint).join('')}</ul></div>
+        <span class="hint">O assistente escreve os pontos com <span class="legend">${ICON('robot', 14)}</span>; para os seus <span class="legend">${ICON('user', 14)}</span> deixa um espaço no texto.</span>
+        <ul class="rows">${S.points.map(renderPoint).join('')}</ul></div>
       ${S.outside.length ? `<div class="section"><strong style="font-size:14px">Fora do email, faz você:</strong>
-        <ul class="crit">${S.outside.map(renderOutside).join('')}</ul></div>` : ''}</div>`
+        <ul class="rows">${S.outside.map(renderOutside).join('')}</ul></div>` : ''}</div>`
 
-    const missingInText = S.points.filter((p) => p.ai).reduce((n, p) => n + p.needs.filter((x) => !has(x.key)).length, 0)
-    const unreviewed = S.points.filter((p) => p.ai && !p.done).length
+    const missingInText = aiNeeds().filter((n) => !has(n.key) && S.points.some((p) => p.ai && p.needs.some((x) => x.key === n.key))).length
+    const openSlots = S.points.filter((p) => pointState(p) === 'slot').length
     const outsideDone = S.outside.every((o) => o.done)
     let msg = ''
     let warn = false
-    if (writing) msg = 'A escrever os pontos do assistente…'
+    if (writing) msg = 'A escrever a resposta… pode demorar cerca de um minuto.'
     else if (S.genError) { msg = errorMessage(S.genError); warn = true }
-    else if (missingInText > 0) { msg = missingInText === 1 ? 'Falta 1 informação, a amarelo no texto.' : `Faltam ${missingInText} informações, a amarelo no texto.`; warn = true }
-    else if (unreviewed > 0) msg = 'Leia o texto do assistente e confirme cada ponto.'
+    else if (missingInText > 0) { msg = missingInText === 1 ? 'Falta 1 informação no texto, entre [ ].' : `Faltam ${missingInText} informações no texto, entre [ ].`; warn = true }
+    else if (openSlots > 0) msg = openSlots === 1 ? 'Escreva a sua parte no espaço marcado no texto.' : `Escreva a sua parte nos ${openSlots} espaços marcados no texto.`
     else if (doneCount === S.points.length && S.points.length) msg = outsideDone ? 'Tudo tratado. Envie quando quiser.' : 'Resposta tratada. Falta a tarefa fora do email.'
 
+    // One obvious next step; everything else lives under "Mais".
+    const more = [
+      regenerable.length ? '<button class="menu-item" data-a="regenerate">Escrever outra versão</button>' : '',
+      wroteSomething ? '<button class="menu-item" data-a="removeAI">Retirar o texto do assistente</button>' : '',
+      '<button class="menu-item" data-a="startEdit">Editar a lista</button>'
+    ].join('')
     const buttons = writing
       ? '<button class="btn-secondary" data-a="cancelWriting">Cancelar</button>'
       : S.genError
       ? '<button class="btn-primary" data-a="retryGenerate">Tentar outra vez</button>'
-      : (toWrite.length ? `<button class="btn-primary" data-a="generate">${SPARK(15)} Gerar os pontos do assistente (${toWrite.length})</button>` : '') +
-        (regenerable.length ? '<button class="btn-secondary" data-a="regenerate">Gerar outra versão</button>' : '') +
-        (anyAI ? '<button class="link muted" data-a="removeAI">Retirar texto do assistente</button>' : '<button class="link" data-a="startEdit">Editar lista</button>')
+      : (toWrite.length ? `<button class="btn-primary" data-a="generate">${SPARK(15)} ${wroteSomething ? 'Escrever o que falta' : 'Escrever a resposta'}</button>` : '') +
+        `<button class="btn-more" data-a="toggleMore" aria-expanded="${!!S.moreOpen}" aria-haspopup="true">Mais ${ICON('chevron', 14)}</button>`
 
-    h += `<div class="panel-foot">${msg ? `<span class="message ${warn ? 'warn' : ''}" role="status">${msg}</span>` : ''}<div class="row">${buttons}</div></div></aside>`
+    h += `<div class="panel-foot">${S.moreOpen && !writing ? `<div class="menu" role="menu">${more}</div>` : ''}
+      ${msg ? `<span class="message ${warn ? 'warn' : ''}" role="status">${msg}</span>` : ''}<div class="row">${buttons}</div></div></aside>`
     return h
   }
 
-  // Where a point is at. This is shown, never clicked: the person changes it
-  // through the owner toggle and the Feito / Confirmar / Desfazer buttons.
+  // The values the assistant could not find, for its own points, once each
+  // (keys are shared across points). They fill its text and never leave the
+  // browser.
+  function aiNeeds() {
+    const seen = new Map()
+    for (const p of S.points) {
+      if (p.owner !== 'ai') continue
+      for (const n of p.needs) if (!seen.has(n.key)) seen.set(n.key, n)
+    }
+    return [...seen.values()]
+  }
+
+  function renderNeeds() {
+    const needs = aiNeeds()
+    if (!needs.length) return ''
+    const missing = needs.filter((n) => !has(n.key)).length
+    return `<div class="needs">
+      <div class="section-head"><strong>Falta saber</strong><span>${missing ? `${missing} por preencher` : 'Tudo preenchido'}</span></div>
+      <span class="hint">Não encontrei isto. Preencha ou deixe em branco: fica entre [ ] no texto.</span>
+      ${needs.map((n) => `<div class="field"><label for="need-${n.key}">${esc(n.label)}</label><input id="need-${n.key}" class="${has(n.key) ? 'filled' : ''}" placeholder="não encontrei" value="${esc(S.values[n.key] || '')}" data-key="${n.key}"></div>`).join('')}
+    </div>`
+  }
+
+  // Where a point is at. Shown, never clicked. The assistant's points are done
+  // once written (no confirmation step) unless values are still missing; the
+  // person's points are done once they type in their slot (or mark it).
   function pointState(p) {
     if (p.writing) return 'writing'
-    if (p.done) return 'done'
-    if (p.ai) return 'review'
-    if (p.owner === 'ai' && p.needs.some((n) => !has(n.key))) return 'ask'
+    if (p.owner === 'ai' && !p.done && p.needs.some((n) => !has(n.key))) return 'ask'
+    if (p.ai || p.done) return 'done'
+    const b = blocks.get(p.id)
+    if (b && b.kind === 'slot' && b.el.isConnected) return 'slot'
     return 'todo'
   }
 
@@ -664,55 +735,85 @@ function createAssistant(replyBox) {
     todo: '<span class="dot"></span>',
     writing: '<span class="spin"></span>',
     ask: ICON('question', 18),
-    review: '<span class="ring"></span>',
+    slot: '<span class="ring"></span>',
     done: ICON('check', 18)
   }
-  const STATE_LABEL = { todo: 'Por fazer', writing: 'A escrever', ask: 'Falta informação', review: 'Escrito, por confirmar', done: 'Feito' }
+  const STATE_LABEL = { todo: 'Por fazer', writing: 'A escrever', ask: 'Falta informação', slot: 'À espera do seu texto', done: 'Feito' }
 
   const actionButton = (action, label, title, id, kind, primary) =>
     `<button class="act ${primary ? 'primary' : ''}" data-a="${action}" data-id="${id}" data-kind="${kind}" aria-label="${label} «${esc(title)}»">${label}</button>`
 
+  // One line per point; details open on click.
   function renderPoint(p) {
     const state = pointState(p)
     const isAI = p.owner === 'ai'
-    const missing = p.needs.filter((n) => !has(n.key))
-    let out = ''
-    let outCls = ''
-    let action = ''
-    if (state === 'writing') out = 'A escrever…'
-    else if (state === 'done') { out = p.ai ? 'Escrito pelo assistente · revisto por si' : 'Tratado por si'; action = actionButton('undoDone', 'Desfazer', p.title, p.id, 'point') }
-    else if (state === 'review') { out = 'Escrito pelo assistente · leia o texto e confirme'; outCls = 'review'; action = actionButton('markDone', 'Confirmar', p.title, p.id, 'point', true) }
-    else if (state === 'ask') { out = 'Falta informação · preencha-a ou deixe em branco'; outCls = 'ask' }
-    else if (isAI) out = 'Fica para o assistente'
-    else { out = 'Fica para si · escreva-o no email'; action = actionButton('markDone', 'Feito', p.title, p.id, 'point') }
-    // The values fill the assistant's text, so the fields belong to its
-    // points; for the person's own points just say what wasn't found.
-    if (!isAI && !p.done && missing.length) out += ` · não encontrei: ${missing.map((n) => esc(n.label)).join(', ')}`
-    const showFields = isAI && p.needs.length && !(p.done && !missing.length)
-    const locked = p.ai || p.writing || p.done
+    const open = S.openId === p.id
     const owner = isAI ? 'o assistente' : 'você'
-    const cardCls = state === 'ask' ? 'ask' : isAI ? 'ai' : ''
-    return `<li>
-      <span class="state ${state}" role="img" aria-label="${STATE_LABEL[state]}">${STATE_ICON[state]}</span>
-      <div class="crit-main">
-        <div class="card ${cardCls} ${p.done ? 'done' : ''}"><strong>${esc(p.title)}</strong>: ${esc(p.desc)}</div>
-        <div class="out ${outCls}"><span>↳ ${out}</span>${action}</div>
-        ${showFields ? p.needs.map((n) => `<div class="field"><label for="need-${n.key}">${esc(n.label)}</label><input id="need-${n.key}" class="${has(n.key) ? 'filled' : ''}" placeholder="não encontrei" value="${esc(S.values[n.key] || '')}" data-key="${n.key}"></div>`).join('') : ''}
-      </div>
-      <button class="owner" role="switch" aria-checked="${isAI}" aria-label="Quem trata «${esc(p.title)}»: ${owner}" title="Trata: ${owner}${locked ? ' (desfaça ou retire o texto para mudar)' : ''}" data-a="toggleOwner" data-id="${p.id}" ${locked ? 'disabled' : ''}><span class="side-user">${ICON('user', 16)}</span><span class="side-ai">${ICON('robot', 16)}</span></button>
+    return `<li class="row-item ${open ? 'open' : ''}">
+      <button class="row-head" data-a="toggleRow" data-id="${p.id}" aria-expanded="${open}">
+        <span class="state ${state}" role="img" aria-label="${STATE_LABEL[state]}">${STATE_ICON[state]}</span>
+        <span class="row-title ${state === 'done' ? 'done' : ''}">${esc(p.title)}</span>
+        <span class="row-owner ${isAI ? 'ai' : ''}" title="Escreve: ${owner}">${ICON(isAI ? 'robot' : 'user', 15)}</span>
+        <span class="chev" aria-hidden="true">${ICON('chevron', 14)}</span>
+      </button>
+      ${open ? renderPointBody(p, state) : ''}
     </li>`
   }
 
-  // Tasks outside the email are always the person's: no toggle, no AI.
+  function renderPointBody(p, state) {
+    const isAI = p.owner === 'ai'
+    const locked = p.ai || p.writing
+    const missing = p.needs.filter((n) => !has(n.key))
+    let out = ''
+    let action = ''
+    if (state === 'writing') out = 'A escrever…'
+    else if (isAI && state === 'ask') out = p.ai ? 'Escrito pelo assistente · falta informação em «Falta saber»' : 'Fica para o assistente · falta informação em «Falta saber»'
+    else if (isAI) out = p.ai ? 'Escrito pelo assistente' : 'Fica para o assistente'
+    else if (state === 'slot') out = 'Escreva no espaço marcado no texto'
+    else if (state === 'done') {
+      const b = blocks.get(p.id)
+      out = 'Tratado por si'
+      if (!(b && b.kind === 'slot' && b.el.isConnected)) action = actionButton('undoDone', 'Desfazer', p.title, p.id, 'point')
+    } else {
+      out = 'Fica para si'
+      action = actionButton('markDone', 'Marcar como feito', p.title, p.id, 'point')
+    }
+    if (!isAI && missing.length && state !== 'done') out += ` · não encontrei: ${missing.map((n) => esc(n.label)).join(', ')}`
+    return `<div class="row-body">
+      <p class="row-desc">${esc(p.desc)}</p>
+      ${renderSources(p)}
+      <div class="seg" role="group" aria-label="Quem escreve «${esc(p.title)}»" ${locked ? `title="Retire o texto do assistente para mudar"` : ''}>
+        <button data-a="setOwner" data-owner="user" data-id="${p.id}" aria-pressed="${!isAI}" ${locked ? 'disabled' : ''}>${ICON('user', 15)} Você</button>
+        <button data-a="setOwner" data-owner="ai" data-id="${p.id}" aria-pressed="${isAI}" ${locked ? 'disabled' : ''}>${ICON('robot', 15)} Assistente</button>
+      </div>
+      <div class="out"><span>↳ ${out}</span>${action}</div>
+    </div>`
+  }
+
+  // Where a point came from (REDESIGN_PLAN.md E5), so people can judge it:
+  // the past answers it rests on, in the staff's own words. A point for the
+  // assistant with no source says so plainly.
+  function renderSources(p) {
+    const found = (p.sourceIds || []).map((id) => (S.sourceDetails || []).find((s) => s.id === id)).filter(Boolean)
+    if (!found.length) return p.owner === 'ai' ? '<span class="srcs-none">Não encontrei uma resposta anterior sobre isto.</span>' : ''
+    const when = (d) => {
+      const date = new Date(d)
+      return isNaN(date) ? '' : ` · ${date.toLocaleDateString('pt-PT', { month: 'short', year: 'numeric' })}`
+    }
+    return `<div class="srcs"><span class="srcs-head">Com base em ${found.length === 1 ? 'uma resposta anterior' : `${found.length} respostas anteriores`}:</span>
+      ${found.map((s) => `<figure class="src"><figcaption>«${esc(s.question)}»${s.date ? when(s.date) : ''}</figcaption><blockquote>${esc(s.excerpt)}</blockquote></figure>`).join('')}
+    </div>`
+  }
+
+  // Tasks outside the email are always the person's: no owner, no AI.
   function renderOutside(o) {
     const state = o.done ? 'done' : 'todo'
-    return `<li>
-      <span class="state ${state}" role="img" aria-label="${STATE_LABEL[state]}">${STATE_ICON[state]}</span>
-      <div class="crit-main">
-        <div class="card ${o.done ? 'done' : ''}">${esc(o.text)}</div>
-        <div class="out"><span>↳ ${o.done ? 'Feito por si' : 'Fica para si'}</span>${o.done ? actionButton('undoDone', 'Desfazer', o.text, o.id, 'outside') : actionButton('markDone', 'Feito', o.text, o.id, 'outside')}</div>
+    return `<li class="row-item">
+      <div class="row-head static">
+        <span class="state ${state}" role="img" aria-label="${STATE_LABEL[state]}">${STATE_ICON[state]}</span>
+        <span class="row-title plain ${o.done ? 'done' : ''}">${esc(o.text)}</span>
+        ${o.done ? actionButton('undoDone', 'Desfazer', o.text, o.id, 'outside') : actionButton('markDone', 'Feito', o.text, o.id, 'outside')}
       </div>
-      <span class="owner fixed" title="Só você pode tratar isto"><span class="side-user">${ICON('user', 16)}</span></span>
     </li>`
   }
 
@@ -811,24 +912,36 @@ function createAssistant(replyBox) {
     if (existing && existing.el.isConnected) {
       if (!untouched(existing)) return false
       existing.el.textContent = text
-      Object.assign(existing, { point, segments, rendered: text })
+      Object.assign(existing, { point, kind: 'ai', segments, rendered: text })
       return true
     }
-    const el = lineDiv(text)
+    insertBlock(point, { kind: 'ai', segments, rendered: text })
+    return true
+  }
+
+  // A one-line slot where the person writes their own point, at its place in
+  // the plan's order (REDESIGN_PLAN.md E7). Typing in it completes the point.
+  function placeSlot(point) {
+    const existing = blocks.get(point.id)
+    if (existing && existing.el.isConnected) return
+    insertBlock(point, { kind: 'slot', rendered: TEMPLATE.slot(point) })
+  }
+
+  function insertBlock(point, block) {
+    const el = lineDiv(block.rendered)
     const gap = lineDiv('')
     const next = anchorAfter(point.id)
     const before = next && next.parentNode === replyBox ? next : null
     replyBox.insertBefore(el, before)
     replyBox.insertBefore(gap, before)
-    blocks.set(point.id, { point, el, gap, segments, rendered: text })
-    return true
+    blocks.set(point.id, { point, el, gap, ...block })
   }
 
   // Puts the values typed in the panel into the email.
   function refillParagraphs() {
     let changed = false
     for (const b of blocks.values()) {
-      if (!b.el.isConnected) continue
+      if (b.kind !== 'ai' || !b.el.isConnected) continue
       const point = S.points.find((p) => p.id === b.point.id) || b.point
       if (untouched(b)) {
         const text = paragraphText(point, b.segments)
@@ -848,9 +961,15 @@ function createAssistant(replyBox) {
     if (changed) tellGmail()
   }
 
+  // Removes the assistant's paragraphs and the slots the person hasn't
+  // written in; slots with the person's text stay.
   function removeAssistantText() {
-    for (const b of blocks.values()) { b.el.remove(); b.gap.remove() }
-    blocks.clear()
+    for (const [id, b] of [...blocks]) {
+      if (b.kind === 'slot' && b.el.isConnected && !untouched(b)) continue
+      b.el.remove()
+      b.gap.remove()
+      blocks.delete(id)
+    }
     for (const f of frame) if (untouched(f)) f.el.remove()
     frame = []
     tellGmail()
@@ -859,40 +978,57 @@ function createAssistant(replyBox) {
   // Gmail saves the draft on input events, not on DOM changes.
   const tellGmail = () => replyBox.dispatchEvent(new Event('input', { bubbles: true }))
 
-  // A paragraph the person deleted puts its point back to "not written".
+  // Keeps the list in step with the email: a deleted paragraph or slot puts
+  // its point back to "to do", and typing in a slot completes the point.
   function syncWithEmail() {
-    const gone = S.points.filter((p) => p.ai && !p.done && !p.writing && !(blocks.get(p.id) && blocks.get(p.id).el.isConnected))
-    if (!gone.length) return
-    for (const p of gone) {
+    const updates = {}
+    for (const p of S.points) {
       const b = blocks.get(p.id)
-      if (b && b.gap.isConnected && !b.gap.textContent.trim()) b.gap.remove()
-      blocks.delete(p.id)
+      if (!b || p.writing) continue
+      if (!b.el.isConnected) {
+        if (b.gap.isConnected && !b.gap.textContent.trim()) b.gap.remove()
+        blocks.delete(p.id)
+        updates[p.id] = b.kind === 'ai' ? { ai: false } : { done: false }
+        continue
+      }
+      if (b.kind === 'slot') {
+        const typed = !untouched(b) && norm(b.el.textContent) !== ''
+        if (typed !== !!p.done) updates[p.id] = { done: typed }
+      }
     }
-    set({ points: S.points.map((p) => gone.includes(p) ? { ...p, ai: false } : p) })
+    if (Object.keys(updates).length) set({ points: S.points.map((p) => updates[p.id] ? { ...p, ...updates[p.id] } : p) })
+    else renderSoon()
   }
 
-  // Asks /generate for the given points and writes their paragraphs into the
-  // email. They are marked as written by the assistant, never as done: only
-  // the person confirms. With `again`, the current paragraphs are sent as
+  // Re-render shortly after typing in the email, so icons and counts follow.
+  let renderTimer = null
+  const renderSoon = () => { clearTimeout(renderTimer); renderTimer = setTimeout(render, 300) }
+
+  // What "Escrever a resposta" still has to do: the assistant's points not
+  // yet written, and slots for the person's points that don't have one.
+  function pointsToWrite() {
+    return S.points.filter((p) => {
+      if (p.writing || p.done || p.ai) return false
+      if (p.owner === 'ai') return true
+      const b = blocks.get(p.id)
+      return !(b && b.el.isConnected)
+    })
+  }
+
+  // Lays the reply out in the plan's order: asks /generate for the
+  // assistant's points (if any) and adds slots for the person's. With
+  // `again`, rewrites the assistant's untouched paragraphs, sending them as
   // `previous` so the backend writes a different version.
-  function writePoints(ids, again) {
-    if (!ids.length || !sent) return
+  function writeReply(again) {
+    const aiIds = again ? regenerableIds() : pointsToWrite().filter((p) => p.owner === 'ai').map((p) => p.id)
+    const slotIds = again ? [] : pointsToWrite().filter((p) => p.owner === 'user').map((p) => p.id)
+    if ((!aiIds.length && !slotIds.length) || !sent) return
     stopWork()
     const token = workToken
-    set({ genError: null, points: S.points.map((p) => ids.includes(p.id) ? { ...p, writing: true } : p) })
-    const asked = S.points.filter((p) => ids.includes(p.id))
-    const previous = again
-      ? asked.map((p) => blocks.get(p.id)).filter(Boolean).map((b) => ({ point: b.point.id, segments: b.segments }))
-      : null
-    const payload = {
-      ...sent,
-      request_summary: S.request,
-      points: asked.map(({ id, title, desc, needs }) => ({ id, title, desc, needs })),
-      context_points: S.points.filter((p) => !ids.includes(p.id)).map(({ id, title, desc }) => ({ id, title, desc })),
-      previous,
-      instruction: null
-    }
-    requestGenerate(payload).then((paragraphs) => {
+    set({ moreOpen: false, genError: null, points: S.points.map((p) => aiIds.includes(p.id) ? { ...p, writing: true } : p) })
+    const asked = S.points.filter((p) => aiIds.includes(p.id))
+
+    const finish = (paragraphs) => {
       if (token !== workToken) return
       addFrame()
       const written = []
@@ -900,21 +1036,48 @@ function createAssistant(replyBox) {
         const point = asked.find((p) => p.id === para.point)
         if (point && Array.isArray(para.segments) && placeParagraph(point, para.segments) !== false) written.push(point.id)
       }
+      for (const p of S.points) if (slotIds.includes(p.id)) placeSlot(p)
       tellGmail()
-      set({ points: S.points.map((p) => ids.includes(p.id) ? { ...p, writing: false, ai: p.ai || written.includes(p.id), done: false } : p) })
-    }, (err) => {
+      set({ points: S.points.map((p) => aiIds.includes(p.id) ? { ...p, writing: false, ai: p.ai || written.includes(p.id) } : p) })
+    }
+
+    if (!aiIds.length) { finish([]); return }
+    const previous = again
+      ? asked.map((p) => blocks.get(p.id)).filter(Boolean).map((b) => ({ point: b.point.id, segments: b.segments }))
+      : null
+    requestGenerate({
+      ...sent,
+      request_summary: S.request,
+      points: asked.map(({ id, title, desc, needs }) => ({ id, title, desc, needs })),
+      context_points: S.points.filter((p) => !aiIds.includes(p.id)).map(({ id, title, desc }) => ({ id, title, desc })),
+      previous,
+      instruction: null
+    }).then(finish, (err) => {
       if (token !== workToken) return
-      set({ genError: err, retryIds: ids, retryAgain: !!again, points: stopWriting() })
+      set({ genError: err, retryAgain: !!again, points: stopWriting() })
     })
   }
 
   const stopWriting = () => S.points.map((p) => p.writing ? { ...p, writing: false } : p)
 
-  // "Gerar outra versão" rewrites the assistant's paragraphs that are neither
-  // confirmed nor edited by the person.
+  // "Escrever outra versão" rewrites the assistant's paragraphs the person
+  // hasn't edited.
   const regenerableIds = () => S.points
-    .filter((p) => p.ai && !p.done && blocks.has(p.id) && untouched(blocks.get(p.id)))
+    .filter((p) => p.ai && blocks.has(p.id) && blocks.get(p.id).kind === 'ai' && untouched(blocks.get(p.id)))
     .map((p) => p.id)
+
+  // [placeholders] and untouched slots still in the email.
+  function pendingInEmail() {
+    let n = 0
+    for (const b of blocks.values()) {
+      if (!b.el.isConnected) continue
+      if (b.kind === 'slot') { if (untouched(b)) n++; continue }
+      const point = S.points.find((p) => p.id === b.point.id) || b.point
+      const text = b.el.textContent
+      for (const need of point.needs) if (text.includes(placeholder(point, need.key))) n++
+    }
+    return n
+  }
 
   const actions = {
     // Explicit click (or the opt-in "Preparar sempre"): the only point where
@@ -922,28 +1085,30 @@ function createAssistant(replyBox) {
     askList: () => runWork(STEPS_LIST, requestList(replyBox), (result) => {
       sent = result.sent
       requester = result.requester
-      return { view: 'list', hadList: true, ...normalizeList(result.list), values: {}, stepsOpen: false, genError: null }
+      return { view: 'list', hadList: true, ...normalizeList(result.list), values: {}, stepsOpen: false, genError: null, openId: null, moreOpen: false }
     }, 'askList'),
     decline: () => leaveThen({ view: 'declined' }),
     reopen: () => set({ view: S.hadList ? 'list' : 'ready' }),
-    hide: () => { stopWork(); leaveThen({ view: 'declined', points: stopWriting() }) },
+    hide: () => { stopWork(); leaveThen({ view: 'declined', points: stopWriting(), moreOpen: false }) },
     cancel: () => { stopWork(); set({ view: S.hadList ? 'list' : 'ready', error: null }) },
     retry: () => S.retry && actions[S.retry](),
     openHelp: () => showGuide(),
     toggleSteps: () => set({ stepsOpen: !S.stepsOpen }),
-    toggleOwner: (el) => updateItem(el, (p) => ({ owner: p.owner === 'ai' ? 'user' : 'ai' })),
+    toggleRow: (el) => set({ openId: S.openId === el.dataset.id ? null : el.dataset.id }),
+    toggleMore: () => set({ moreOpen: !S.moreOpen }),
+    setOwner: (el) => updateItem(el, { owner: el.dataset.owner }),
     markDone: (el) => updateItem(el, { done: true }),
     undoDone: (el) => updateItem(el, { done: false }),
-    generate: () => writePoints(S.points.filter((p) => p.owner === 'ai' && !p.ai && !p.done && !p.writing).map((p) => p.id)),
-    // Rewrites the assistant's points the person hasn't confirmed yet.
-    regenerate: () => writePoints(regenerableIds(), true),
-    retryGenerate: () => writePoints(S.retryIds || [], S.retryAgain),
+    generate: () => writeReply(false),
+    regenerate: () => writeReply(true),
+    retryGenerate: () => writeReply(S.retryAgain),
     cancelWriting: () => { stopWork(); set({ points: stopWriting() }) },
     removeAI: () => {
       removeAssistantText()
-      set({ points: S.points.map((p) => p.ai ? { ...p, ai: false, done: false } : p) })
+      set({ moreOpen: false, points: S.points.map((p) => p.ai ? { ...p, ai: false } : p) })
+      syncWithEmail()
     },
-    startEdit: () => set({ editing: true, snapshot: S.points }),
+    startEdit: () => set({ editing: true, snapshot: S.points, moreOpen: false }),
     finishEdit: () => set({ editing: false }),
     cancelEdit: () => set({ editing: false, points: S.snapshot || S.points }),
     removePoint: (el) => set({ points: S.points.filter((p) => p.id !== el.dataset.id) })
@@ -973,7 +1138,7 @@ function createAssistant(replyBox) {
     if (!v) return
     const i = v.indexOf(':')
     const item = i >= 0 ? { title: v.slice(0, i).trim(), desc: v.slice(i + 1).trim() } : { title: v, desc: '' }
-    set({ newText: '', points: S.points.concat([{ id: 'n' + Date.now(), needs: [], owner: 'user', done: false, ai: false, writing: false, ...item }]) })
+    set({ newText: '', points: S.points.concat([{ id: 'n' + Date.now(), needs: [], owner: 'user', sourceIds: [], done: false, ai: false, writing: false, ...item }]) })
   })
 
   // Typing in the reply collapses the ready bar into "Mostrar assistente".
@@ -981,6 +1146,40 @@ function createAssistant(replyBox) {
     if (S.view === 'ready') leaveThen({ view: 'declined' })
     else syncWithEmail()
   })
+
+  // Open issue 9: a reminder next to Gmail's Enviar while [placeholders] or
+  // untouched slots remain. It never blocks sending: it only shows while the
+  // button is hovered or focused, and nothing stops the click.
+  let tip = null
+  function sendButtonFrom(el) {
+    const btn = el && el.closest && el.closest('[role="button"][data-tooltip]')
+    if (!btn || !/^(Enviar|Send)\b/.test(btn.getAttribute('data-tooltip') || '')) return null
+    const thread = findThreadView(replyBox)
+    return thread && thread.contains(btn) ? btn : null
+  }
+  function showTip(btn) {
+    const n = pendingInEmail()
+    if (!n) return
+    if (!tip) {
+      tip = document.createElement('div')
+      tip.dataset.dalmHost = ''
+      tip.style.pointerEvents = 'none'
+      tip.attachShadow({ mode: 'open' })
+      document.body.appendChild(tip)
+    }
+    tip.shadowRoot.innerHTML = `<style>${UI_CSS}</style><div class="root enter"><div class="send-tip" role="status">${ICON('question', 16)}<span>${n === 1 ? 'O texto ainda tem 1 espaço por preencher entre [ ].' : `O texto ainda tem ${n} espaços por preencher entre [ ].`}</span></div></div>`
+    const r = btn.getBoundingClientRect()
+    tip.style.display = ''
+    tip.style.left = `${Math.max(EDGE, r.left)}px`
+    tip.style.top = `${Math.max(EDGE, r.top - 52)}px`
+  }
+  const hideTip = () => { if (tip) tip.style.display = 'none' }
+  const onOver = (e) => { const btn = sendButtonFrom(e.target); if (btn) showTip(btn) }
+  const onOut = (e) => { const btn = sendButtonFrom(e.target); if (btn && !btn.contains(e.relatedTarget)) hideTip() }
+  document.addEventListener('mouseover', onOver, true)
+  document.addEventListener('mouseout', onOut, true)
+  document.addEventListener('focusin', onOver, true)
+  document.addEventListener('focusout', hideTip, true)
 
   // Follow the reply as the conversation scrolls or the window resizes.
   window.addEventListener('scroll', schedulePosition, true)
@@ -998,6 +1197,11 @@ function createAssistant(replyBox) {
     resizeObserver.disconnect()
     window.removeEventListener('scroll', schedulePosition, true)
     window.removeEventListener('resize', schedulePosition)
+    document.removeEventListener('mouseover', onOver, true)
+    document.removeEventListener('mouseout', onOut, true)
+    document.removeEventListener('focusin', onOver, true)
+    document.removeEventListener('focusout', hideTip, true)
+    if (tip) tip.remove()
     host.remove()
   }, 1000)
 
@@ -1018,6 +1222,9 @@ async function attachToReplyBox(replyBox) {
 
 // Watch for Gmail reply boxes being added to the DOM
 const observer = new MutationObserver(() => {
+  // An orphaned copy (see extensionAlive) stops watching; the fresh copy
+  // that Chrome injects when Gmail is reloaded takes over.
+  if (!extensionAlive()) { observer.disconnect(); return }
   document.querySelectorAll('div[role="textbox"][aria-label]')
     .forEach(attachToReplyBox)
 })

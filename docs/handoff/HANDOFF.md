@@ -305,3 +305,16 @@ What this changes in the rules:
   - **Motion:** the badge pops in, the card drops in, the panel slides in from the right and out on "Esconder". Animations play only on opening and closing, and are off when the system asks for reduced motion.
 - "Preparar esta lista sempre que abro uma resposta" moved from the panel footer into "Como funciona" (open issue 10, done).
 - The small in-row buttons (Feito, Confirmar, Desfazer), the owner toggle and the collapsed badge are 32–36 px high, below the 40–44 px target in section 8, to fit the panel and keep the badge unobtrusive. Revisit if testing shows they are hard to hit.
+
+### 14.3 Simplified after the heuristic evaluation
+
+Pedro's heuristic evaluation rated the interface too complex for the task and for staff new to AI (severity 4); see `docs/REDESIGN_PLAN.md`. Where this conflicts with 14.1, this wins.
+
+- **No confirmation step.** The assistant's points count as done once written (unless values are still missing). Rule 3 becomes: *the assistant never completes the person's points*; the person still reviews everything in the email before sending, and that review is measured by the edit distance in `reply_sent`, not by a click. "Confirmar" is gone.
+- **Compact list.** One line per point: status icon, title, a small owner icon. Clicking a line opens it: description, a **Você / Assistente** choice (text-labelled, locked once the assistant has written the point), and a ↳ line. Status icons: • to do, spinner, amber ? (an assistant point with values still missing), dashed circle (a slot waiting for the person's text), ✓ done.
+- **"Falta saber".** All the values the assistant could not find, for its own points, in one block above the list, each asked once. Text: "Não encontrei isto. Preencha ou deixe em branco: fica entre [ ] no texto."
+- **One next step.** The footer's only main button is **Escrever a resposta** ("Escrever o que falta" once something was written). "Escrever outra versão", "Retirar o texto do assistente" and "Editar a lista" are under **Mais**.
+- **Slots for the person's points.** "Escrever a resposta" lays the whole email out in the plan's order: the assistant's points as paragraphs and each of the person's points as a one-line slot, `[Escreva aqui: <description>]`. Typing in a slot completes that point; deleting it puts the point back to "to do". Removing the assistant's text keeps slots the person wrote in. Points the person handles without a slot can be marked done from their opened line.
+- **Reminder at Enviar (open issue 9, done).** While `[placeholders]` or untouched slots remain, hovering or focusing Gmail's Enviar shows "O texto ainda tem N espaços por preencher entre [ ]." It never blocks sending.
+- **Wording.** "Ou escreva a sua resposta, como sempre."; "A escrever a resposta… pode demorar cerca de um minuto."; the badge and counter count points not yet done.
+- **Sources per point (REDESIGN_PLAN E5, done).** A point's opened line shows "Com base em uma resposta anterior:" with the matched past question, the staff's verbatim excerpt and its date when available (from `source_ids` / `source_details`, `BACKEND_SPEC.md` §4). An assistant point with no source says "Não encontrei uma resposta anterior sobre isto."
