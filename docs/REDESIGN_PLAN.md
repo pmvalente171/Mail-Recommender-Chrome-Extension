@@ -80,3 +80,78 @@ What the index holds today: question, answer, verbatim staff excerpts, reasoning
 - Reindex the June build (7,809 pairs, dates, ticket ids kept server-side).
 - Faster model endpoint (novasearch admins) for /list under ~20 s.
 - Inline review controls inside the email (deferred from E4).
+
+---
+
+## Round 2: "Falta saber" (2026-10-19)
+
+Status: **agreed** by Pedro (options = grounded candidate values only) and both sessions. `BACKEND_SPEC.md` updated. **Extension built:** F1–F4 (cards, where it goes, options, field type), with fallbacks for backends that only send key and label. **Backend:** implementing the new need fields.
+
+### Findings (Pedro, testing)
+
+1. **It's not clear what the person is filling in.** The label is a long phrase squeezed into a narrow column beside the field ("Nome do serviço ou email para recuperação de password"). There's no link to the step that uses the value or to where it will go in the email.
+2. **The assistant should be able to offer options**, so the person picks instead of typing from memory.
+
+Constraint (rule 1): options must come from the sources the backend actually retrieved, never be invented. Offering a value from an old or uncertain past answer as a choice to confirm (with where it came from and its date) fits rule 1 and B3. Stating it in the text as fact does not.
+
+### Extension (owner: extension session)
+
+**F1. One card per missing value, question first.** The question on top in full width, plain language ("Qual é o email para recuperar a password?"), then the field (or options) underneath. No side label column.
+
+**F2. Say where it goes.** Under the question:
+- before the reply is written: "Usado no passo ② Recuperação de dados", with the step's colour;
+- after it is written: the actual sentence from the email with the blank highlighted, e.g. "…pode pedir novos dados através de **[ ___ ]**." (from the `/generate` segments around the slot).
+
+Focusing or hovering the card outlines that spot in the email (same layer as E4). Clicking "ver no email" scrolls to it.
+
+**F3. Options to pick from.** When the backend found candidate values, they show as choices under the question, each with its source and date if known ("academicos@fct.unl.pt · resposta anterior, jul. 2025"). Clicking one fills the field, and it can still be edited. "Outro" leaves the field free. Leaving it blank stays allowed.
+
+**F4. Right kind of field.** Use the value type for the input: email, date, number, or short text; with a format hint ("ex.: nome@fct.unl.pt").
+
+### Backend (owner: backend session): proposed additive fields on `needs[]`
+
+| Field | Type | Meaning |
+|---|---|---|
+| `question` | string | The need as a plain pt-PT question, shown as the card's heading ("Qual é o email para recuperar a password?"). |
+| `label` | string | **Shorter** than now (≤4 words), used inside the email's brackets: `[Email de recuperação]`. |
+| `type` | `"text"` \| `"email"` \| `"date"` \| `"number"` \| `"url"` | Input type; default `"text"`. |
+| `hint` | string, optional | Format example: "ex.: nome@fct.unl.pt". Never a real value. |
+| `options` | array, optional | Candidate values **found in the retrieved sources** but not confirmed: `[{ "value": "…", "source_id": "s1" }]`, at most 3, deduplicated. Empty when nothing was found. Never invented. |
+
+Everything is additive; current clients keep working.
+
+### Backend review (2026-10-19)
+
+**`question`, short `label`, `type` and `hint` are cheap and fix finding 1. Options are feasible and safe, but on today's index they will almost always be empty.**
+
+Measured on the regression set (v0.4): of 18 needs, 13 have no supporting source at all. Only 1 has a plausible option ("7 dias" for a payment deadline); the other 2 candidates were mismatches. This is structural: a need exists because the sources lacked the fact. Options mostly appear when a value was found but is time-sensitive (B3), which is rare with 825 indexed pairs. The June reindex (backlog) is what would make them common.
+
+Agreed details:
+- **`question`**: one sentence ending in "?", pt-PT, no redaction labels. It takes over the "answerable without rereading the email" role from `label`.
+- **`label`**: ≤4 words (retry if longer; kept rather than chopped in lenient mode).
+- **`type`**: model-chosen from the enum, default `"text"`. `"number"` only for counts (vagas, prestações). Amounts stay `"text"`, because staff write "697 €" or "697,00 euros".
+- **`hint`**: set **server-side from `type`**, never by the model, so it can't leak a real value: email → "ex.: nome@fct.unl.pt", date → "ex.: 15/09/2026", url → "ex.: https://…", number → "ex.: 25", text → none.
+- **`options`**: the model proposes `{ value, source_id }`. The server keeps one only if `value` appears **verbatim** (whitespace/case-normalised) in the excerpt shown for that source in `source_details`, so the person can always see it in context. The value must also match its type (email pattern, http(s) URL, a date as written). `source_id` must be one of the point's own sources. Never personal data, max 3, deduplicated. `value` is display text, filled in as-is: never normalised or parsed (no ISO dates, no added years).
+- **`options[].time_sensitive`**: true when the source is tagged `TEMPORAL_*`/`REG_AMOUNT`/`REG_EDITAL`, or the value names an earlier academic year. The UI says "pode estar desatualizado". An option is never preselected, and `/generate` keeps the slot either way.
+- **Latency**: about +2–4 s per list at today's speed (question and type add ~20–25 tokens per need, max 4 needs).
+- **Source dates** stay `null` until the reindex, so F3 shows no date (or "data desconhecida").
+
+Final need shape (additive):
+```json
+{ "key": "email_recuperacao", "label": "Email de recuperação",
+  "question": "Qual é o email para recuperar a password?",
+  "type": "email", "hint": "ex.: nome@fct.unl.pt",
+  "options": [ { "value": "academicos@fct.unl.pt", "source_id": "s1", "time_sensitive": false } ] }
+```
+`hint` omitted for `"text"`; `options` omitted or `[]` when none. The regression set will check: question ends in "?", label ≤4 words, type in enum, every option verbatim in its source excerpt.
+
+**Consequences for the extension:**
+- Design the common case as a question plus an empty field (F1, F2, F4). Options (F3) are the rare case and must look fine absent.
+- F2's sentence comes from the `/generate` segments the extension already has; nothing needed from the backend.
+- A shared key can belong to two steps, so F2 says "Usado nos passos ② e ③".
+- When an option is chosen, highlight it in that source's excerpt in the step's sources panel.
+
+### Open questions
+
+- Pedro: is "options from past answers, with their source" what you meant by "multiple options"? Or also other kinds (e.g. alternative phrasings of a sentence, or yes/no questions the assistant asks)?
+- Pedro: agree to the need shape above? Then `BACKEND_SPEC.md` gets updated and the backend implements it (estimated within a day).

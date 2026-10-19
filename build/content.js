@@ -145,6 +145,25 @@ const TEMPLATE = {
 // Gmail's own signature and quoted text: the assistant's text goes above them.
 const GMAIL_TAIL = '.gmail_signature, .gmail_signature_prefix, .gmail_quote, .gmail_extra'
 
+// A missing value (BACKEND_SPEC.md §4, REDESIGN_PLAN.md Round 2): the short
+// label goes in the email's brackets, the question heads its card, the type
+// picks the keyboard, and options are values found in the sources for the
+// person to pick. Older backends send only key and label.
+const NEED_TYPES = ['text', 'email', 'date', 'number', 'url']
+function normalizeNeed(n) {
+  return {
+    key: String(n.key),
+    label: n.label || n.key,
+    question: n.question || n.label || n.key,
+    type: NEED_TYPES.includes(n.type) ? n.type : 'text',
+    hint: n.hint || '',
+    options: (n.options || [])
+      .filter((o) => o && typeof o.value === 'string' && o.value.trim())
+      .slice(0, 3)
+      .map((o) => ({ value: o.value, sourceId: o.source_id ? String(o.source_id) : null, timeSensitive: !!o.time_sensitive }))
+  }
+}
+
 // Fills in defaults so the panel never has to guess at missing fields.
 function normalizeList(list) {
   return {
@@ -153,7 +172,7 @@ function normalizeList(list) {
     // switch it. Without a suggestion the point is the person's.
     points: (list.points || []).map((p, i) => ({
       id: String(p.id || `p${i}`), title: p.title || '', desc: p.desc || '',
-      needs: p.needs || [], owner: p.owner === 'ai' ? 'ai' : 'user',
+      needs: (p.needs || []).map(normalizeNeed), owner: p.owner === 'ai' ? 'ai' : 'user',
       sourceIds: (p.source_ids || []).map(String),
       done: false, ai: false, writing: false
     })),
@@ -230,6 +249,9 @@ button{font-family:inherit;cursor:pointer}
 .fab:hover .fab-label,.fab:focus-visible .fab-label{max-width:170px;opacity:1;margin:0 4px 0 8px}
 .fab-count{min-width:18px;height:18px;margin:0 2px 0 4px;padding:0 5px;border-radius:9px;background:var(--green-600);color:#fff;font-size:11px;font-weight:700;display:flex;align-items:center;justify-content:center}
 @keyframes dalm-pop{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:none}}
+@keyframes dalm-swap{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+.section.swap .section-head > :not(strong),.section.swap .hint{animation:dalm-swap .2s ease-out both}
+.section.swap .rows > li{animation:dalm-swap .24s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(min(var(--i, 0), 6) * 35ms)}
 @keyframes dalm-drop{from{opacity:0;transform:translateY(-8px) scale(.98)}to{opacity:1;transform:none}}
 @keyframes dalm-slide-in{from{opacity:0;transform:translateX(32px)}to{opacity:1;transform:none}}
 @keyframes dalm-slide-out{to{opacity:0;transform:translateX(32px)}}
@@ -241,8 +263,19 @@ button{font-family:inherit;cursor:pointer}
 .leaving .bar{animation:dalm-fade-out .16s ease-in forwards}
 
 .panel{display:flex;flex-direction:column;background:#fff;border:1px solid var(--panel-border);border-radius:14px;overflow:hidden;height:var(--panel-height,560px);box-shadow:var(--float-shadow)}
-.panel-head{display:flex;align-items:center;gap:6px;padding:12px 16px;border-bottom:1px solid var(--panel-line);cursor:grab;user-select:none;touch-action:none}
+.panel-head{position:relative;z-index:3;display:flex;align-items:center;gap:6px;padding:10px 14px;border-bottom:1px solid var(--panel-line);cursor:grab;user-select:none;touch-action:none}
 .panel-head button{cursor:pointer}
+.traffic{display:flex;align-items:center;gap:2px;margin:0 -6px 0 4px}
+.tl{position:relative;width:32px;height:32px;padding:0;border:0;border-radius:16px;background:transparent;color:var(--ink-3);display:flex;align-items:center;justify-content:center;transition:background .12s ease,color .12s ease}
+.tl:hover,.tl:focus-visible{background:#EEF1EF;color:var(--green-700)}
+.tl svg{stroke-width:2.4}
+[data-tip]{position:relative}
+[data-tip]::after{content:attr(data-tip);position:absolute;top:calc(100% + 6px);left:50%;transform:translate(-50%,-2px);white-space:nowrap;padding:4px 8px;border-radius:6px;background:rgba(30,36,33,.92);color:#fff;font:600 11.5px/1.3 var(--font-ui);opacity:0;pointer-events:none;transition:opacity .12s ease,transform .12s ease;z-index:10}
+[data-tip].tip-end::after{left:auto;right:0;transform:translateY(-2px)}
+[data-tip]:hover::after,[data-tip]:focus-visible::after{opacity:1;transform:translate(-50%,0);transition-delay:.35s}
+[data-tip].tip-end:hover::after,[data-tip].tip-end:focus-visible::after{transform:none}
+.tl[data-tip]::after{left:auto;right:0;transform:translateY(-2px)}
+.tl[data-tip]:hover::after,.tl[data-tip]:focus-visible::after{transform:none}
 .panel.dragging{box-shadow:0 18px 40px rgba(23,40,34,.28),0 4px 10px rgba(23,40,34,.12)}
 .panel.dragging .panel-head{cursor:grabbing}
 .panel-head strong{flex:1 1 auto;font-size:15px;color:var(--green-900)}
@@ -270,13 +303,13 @@ button{font-family:inherit;cursor:pointer}
 .pnum{flex:0 0 auto;width:20px;height:20px;border-radius:50%;background:var(--pc);color:#fff;font-size:11.5px;font-weight:700;display:flex;align-items:center;justify-content:center}
 .pnum.ghost{background:transparent;border:1.5px dashed var(--green-300);color:var(--green-700)}
 .row-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}
-.row-sub{font-size:12.5px;line-height:1.35;color:var(--ink-3);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.row-sub{font-size:12.5px;line-height:1.35;color:var(--ink-3);white-space:pre-line;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .row-item.editing .row-head{align-items:flex-start;padding-top:6px;padding-bottom:6px}
 .row-item.editing .pnum{margin-top:7px}
 .edit-fields{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:4px}
 .edit-title,.edit-desc{width:100%;font:inherit;min-height:34px;padding:0 10px;border:1px solid #C4CDC8;border-radius:8px;background:#fff;color:var(--ink)}
 .edit-title{font-size:14px;font-weight:600}
-.edit-desc{font-size:13px;color:var(--ink-2)}
+.edit-desc{display:block;font-size:13px;line-height:1.45;color:var(--ink-2);padding:7px 10px;resize:none;overflow:hidden}
 .icon-btn{flex:0 0 auto;width:36px;height:36px;padding:0;border:0;border-radius:18px;background:transparent;color:var(--danger-ink);display:flex;align-items:center;justify-content:center}
 .icon-btn:hover{background:#FBEFEF}
 .icon-btn.add{color:var(--green-700)}
@@ -289,10 +322,9 @@ button.row-head:hover{background:#F1F4F2}
 .row-title.done{color:var(--ink-3)}
 .row-owner{flex:0 0 auto;width:26px;height:26px;border-radius:13px;display:flex;align-items:center;justify-content:center;color:var(--ink-3);background:#EEF1EF}
 .row-owner.ai{color:var(--green-700);background:var(--green-100)}
-.chev{flex:0 0 auto;display:flex;color:var(--ink-4);transition:transform .2s ease}
+.chev{flex:0 0 auto;display:flex;color:var(--ink-4);transition:transform .12s ease}
 .row-item.open .chev{transform:rotate(180deg)}
 .row-body{display:flex;flex-direction:column;gap:8px;padding:0 10px 10px 36px}
-.row-item.opening .row-body{animation:dalm-drop .18s ease-out}
 .row-desc{margin:0;font-size:13.5px;line-height:1.45;color:var(--ink-2)}
 .state{flex:0 0 auto;width:22px;height:22px;display:flex;align-items:center;justify-content:center;color:var(--ink-4)}
 .state .dot{width:6px;height:6px;border-radius:50%;background:currentColor}
@@ -309,8 +341,29 @@ button.row-head:hover{background:#F1F4F2}
 .act{font-size:12.5px;font-weight:600;min-height:32px;padding:0 12px;border-radius:16px;border:1px solid var(--green-300);background:#fff;color:var(--green-700);white-space:nowrap}
 .act.primary{background:var(--green-700);border-color:var(--green-700);color:#fff}
 .needs{display:flex;flex-direction:column;gap:8px;padding:12px;border-radius:12px;background:#FFF9E8;border:1px solid #F1DE9C}
+.need{display:flex;flex-direction:column;gap:6px;padding-top:10px;border-top:1px solid #F1DE9C}
+.need-q{font-size:13.5px;font-weight:600;line-height:1.4;color:var(--ink)}
+.need-where{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px;line-height:1.4;color:var(--ink-3)}
+.need-where .link{min-height:24px;font-size:12px;padding:0 2px}
+.need-sentence{flex:1 1 200px;min-width:0;font-style:italic}
+.need-sentence mark{font-style:normal;background:var(--amber-bg);color:var(--amber-ink);border-radius:3px;padding:0 3px}
+.need.filled .need-sentence mark{background:var(--green-100);color:var(--green-900)}
+.pnum.sm{width:16px;height:16px;font-size:10px}
+.need-field{position:relative}
+.need-field.has-pill .need-input{padding-right:112px}
+.sugg-pill{position:absolute;right:6px;top:6px;display:inline-flex;align-items:center;gap:3px;min-height:24px;padding:0 8px;border:0;border-radius:12px;background:var(--green-100);color:var(--green-700);font-size:11.5px;font-weight:600}
+.sugg-menu{display:none;position:absolute;left:0;right:0;top:calc(100% + 4px);z-index:6;flex-direction:column;padding:4px;background:#fff;border:1px solid var(--panel-line);border-radius:10px;box-shadow:0 8px 20px rgba(23,40,34,.16)}
+.need-field:focus-within:not(.has-value) .sugg-menu{display:flex;animation:dalm-drop .14s ease-out}
+.sugg{display:flex;flex-direction:column;align-items:flex-start;gap:1px;padding:6px 10px;border:0;border-radius:8px;background:transparent;color:var(--ink);font-size:13px;text-align:left}
+.sugg:hover,.sugg:focus-visible{background:var(--green-50)}
+.sugg-src{font-size:11px;color:var(--ink-3)}
+.sugg-src.warn{color:var(--amber-text);font-weight:600}
+.need-input{display:block;width:100%;font:inherit;font-size:13.5px;line-height:1.4;padding:8px 10px;min-height:36px;resize:none;overflow:hidden;border:1px solid var(--amber-field-line);border-radius:8px;background:var(--amber-field);color:var(--ink)}
+.need-input.filled{border-color:#C4CDC8;background:#fff}
+.src blockquote mark{background:var(--amber-bg);color:var(--amber-ink);border-radius:3px;padding:0 2px}
 .btn-more{display:inline-flex;align-items:center;gap:4px;font-size:13px;font-weight:600;min-height:40px;padding:0 12px;border:0;border-radius:20px;background:transparent;color:var(--ink-2);margin-left:auto}
 .btn-more:hover{background:#EEF1EF}
+.btn-more svg{transition:transform .1s ease}
 .btn-more[aria-expanded="true"] svg{transform:rotate(180deg)}
 .menu{display:flex;flex-direction:column;padding:4px;border:1px solid var(--panel-line);border-radius:10px;background:#fff;box-shadow:0 6px 16px rgba(23,40,34,.12)}
 .menu.opening{animation:dalm-drop .16s ease-out}
@@ -323,10 +376,6 @@ button.row-head:hover{background:#F1F4F2}
 .src blockquote{margin:0;padding:2px 0 2px 10px;border-left:2px solid var(--green-200);font-size:12.5px;line-height:1.45;color:var(--ink-3)}
 .send-tip{display:flex;align-items:center;gap:8px;max-width:360px;padding:10px 14px;border-radius:10px;background:#FFF9E8;border:1px solid #F1DE9C;color:var(--amber-text);font-size:13px;font-weight:600;box-shadow:0 6px 16px rgba(23,40,34,.16)}
 .enter .send-tip{animation:dalm-drop .16s ease-out}
-.field{display:flex;align-items:center;gap:8px}
-.field label{flex:0 0 auto;width:118px;font-size:12.5px;color:var(--amber-text)}
-.field input{flex:1 1 auto;min-width:0;font:inherit;font-size:13.5px;padding:0 10px;min-height:34px;border:1px solid var(--amber-field-line);border-radius:8px;background:var(--amber-field);color:var(--ink)}
-.field input.filled{border-color:#C4CDC8;background:#fff}
 .message{font-size:13px;font-weight:600;color:var(--green-700)}
 .message.warn{color:var(--amber-text)}
 .persist{display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--ink-3)}
@@ -394,7 +443,8 @@ const ICON_SHAPES = {
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>',
   chevron: '<path d="M6 9l6 6 6-6"/>',
   remove: '<circle cx="12" cy="12" r="9"/><path d="M8 12h8"/>',
-  add: '<circle cx="12" cy="12" r="9"/><path d="M8 12h8M12 8v8"/>'
+  add: '<circle cx="12" cy="12" r="9"/><path d="M8 12h8M12 8v8"/>',
+  minus: '<path d="M5 12h14"/>'
 }
 const ICON = (name, s) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_SHAPES[name]}</svg>`
 
@@ -445,10 +495,10 @@ function createAssistant(replyBox) {
   let S = {
     view: 'ready', // 'ready' | 'declined' | 'working' | 'list'
     request: '', points: [], outside: [], steps: [], sources: [], values: {},
-    editing: false, snapshot: null, newText: '',
+    editing: false, snapshot: null, newText: '', newDesc: '',
     stepTexts: [], stepIdx: 0, stepsOpen: false, hadList: false,
     error: null, retry: null,
-    openId: null, // the list row that is expanded
+    openIds: [], // the plan steps that are opened (any number at once)
     moreOpen: false // the "Mais" menu
   }
   let timer = null
@@ -460,6 +510,9 @@ function createAssistant(replyBox) {
   }
 
   const has = (key) => !!(S.values[key] || '').trim()
+  // A value as it goes into the email: it fills a gap inside a sentence, so
+  // line breaks typed in the (multi-line) field become spaces.
+  const fill = (key) => (S.values[key] || '').trim().replace(/\s*\n\s*/g, ' ')
 
   // Shows the progress steps one at a time while `work` runs. The last step
   // stays in progress until the work settles; then `after(result)` is applied,
@@ -602,10 +655,18 @@ function createAssistant(replyBox) {
   }
 
   // Hover from the panel…
-  root.addEventListener('mouseover', (e) => {
-    const li = e.target.closest('.row-item[data-pid]')
-    setHover(li && blocks.has(li.dataset.pid) ? li.dataset.pid : null)
-  })
+  // A plan step, or a "Falta saber" card (which points at the step that uses
+  // the value), outlines its section in the email.
+  const linkedPoint = (target) => {
+    const el = target.closest && target.closest('.row-item[data-pid], .need[data-owner]')
+    const id = el && (el.dataset.pid || el.dataset.owner)
+    return id && blocks.has(id) ? id : null
+  }
+  root.addEventListener('mouseover', (e) => setHover(linkedPoint(e.target)))
+  // Pressing a suggestion (or the pill) keeps focus in the field, so the
+  // dropdown doesn't close before the click lands.
+  root.addEventListener('mousedown', (e) => { if (e.target.closest('.sugg, .sugg-pill')) e.preventDefault() })
+  root.addEventListener('focusin', (e) => { const id = linkedPoint(e.target); if (id) setHover(id) })
   host.addEventListener('mouseleave', () => setHover(null))
   // …and from the email.
   replyBox.addEventListener('mousemove', (e) => {
@@ -618,7 +679,7 @@ function createAssistant(replyBox) {
   // Opening a point brings its section into view if it's out of sight.
   function scrollToSection(id) {
     const b = blocks.get(id)
-    if (!b || !b.el.isConnected) return
+    if (!b || !b.el.isConnected || typeof b.el.scrollIntoView !== 'function') return
     const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
     b.el.scrollIntoView({ block: 'nearest', behavior: reduced ? 'auto' : 'smooth' })
   }
@@ -650,6 +711,49 @@ function createAssistant(replyBox) {
     position()
   })
 
+  // Opening and closing a step's details, and the Mais menu, animate both
+  // ways. Opening runs after the redraw that adds the details (unfold);
+  // closing runs first and only then applies the change (foldThen), since
+  // the redraw would remove them at once.
+  const FOLD_MS = 200 // opening
+  const UNFOLD_BACK_MS = 120 // closing: quicker than opening
+  const reducedMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+  const canAnimate = (el) => !!el && typeof el.animate === 'function' && !reducedMotion()
+  const folding = new Set()
+
+  function unfold(li) {
+    const body = li.querySelector('.row-body')
+    if (!canAnimate(body)) return
+    const h = body.offsetHeight
+    body.style.overflow = 'hidden'
+    body.animate([{ height: '0px', opacity: 0, paddingBottom: '0px' }, { height: `${h}px`, opacity: 1, paddingBottom: '10px' }],
+      { duration: FOLD_MS, easing: 'cubic-bezier(.2,.8,.2,1)' }).onfinish = () => { body.style.overflow = '' }
+    const chev = li.querySelector('.chev')
+    if (chev) chev.animate([{ transform: 'rotate(0deg)' }, { transform: 'rotate(180deg)' }], { duration: FOLD_MS, easing: 'ease' })
+  }
+
+  function foldThen(id, apply) {
+    const li = rowEl(id)
+    const body = li && li.querySelector('.row-body')
+    if (!canAnimate(body)) { apply(); return }
+    if (folding.has(id)) return
+    folding.add(id)
+    const h = body.offsetHeight
+    body.style.overflow = 'hidden'
+    li.classList.remove('open') // the arrow turns back through its CSS transition
+    body.animate([{ height: `${h}px`, opacity: 1, paddingBottom: '10px' }, { height: '0px', opacity: 0, paddingBottom: '0px' }],
+      { duration: UNFOLD_BACK_MS, easing: 'ease-in', fill: 'forwards' }).onfinish = () => { folding.delete(id); apply() }
+  }
+
+  function closeMenuThen(apply) {
+    const menu = root.querySelector('.menu')
+    if (!canAnimate(menu)) { apply(); return }
+    const button = root.querySelector('.btn-more')
+    if (button) button.setAttribute('aria-expanded', 'false') // its arrow turns back
+    menu.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(6px)' }],
+      { duration: 100, easing: 'ease-in', fill: 'forwards' }).onfinish = apply
+  }
+
   // Plays the closing animation, then applies the change.
   function leaveThen(patch) {
     const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -670,10 +774,19 @@ function createAssistant(replyBox) {
   // across redraws on the same screen, and play small opening animations only
   // when something actually opens, not on every redraw.
   let lastScreen = null
-  let lastOpenId = null
+  let lastOpenIds = []
   let lastMoreOpen = false
-  let openingId = null
+  // Switching the plan between viewing and editing: the steps fade in from
+  // slightly below, one after another (.section.swap), once per switch.
+  let lastEditing = null
+  let editSwap = false
+  let openingIds = []
   let moreOpening = false
+  // The step the person just acted on (owner, Feito/Desfazer, opening). Its
+  // change can resize things above it, e.g. "Falta saber" growing or
+  // shrinking, so the redraw keeps that step where it was on screen.
+  let keepInPlace = null
+  const rowEl = (id) => id && [...root.querySelectorAll('.row-item[data-pid]')].find((li) => li.dataset.pid === id)
 
   function render() {
     const active = root.activeElement && root.activeElement.id
@@ -682,11 +795,17 @@ function createAssistant(replyBox) {
     const body = root.querySelector('.panel-body')
     const scrollTop = body ? body.scrollTop : 0
     const screen = S.view
+    const anchor = rowEl(keepInPlace)
+    const anchorTop = anchor ? anchor.getBoundingClientRect().top : null
+    const anchorId = keepInPlace
+    keepInPlace = null
 
-    openingId = S.openId !== lastOpenId ? S.openId : null
+    openingIds = S.openIds.filter((id) => !lastOpenIds.includes(id))
     moreOpening = !!S.moreOpen && !lastMoreOpen
-    lastOpenId = S.openId
+    lastOpenIds = S.openIds
     lastMoreOpen = !!S.moreOpen
+    editSwap = S.view === 'list' && lastEditing !== null && !!S.editing !== lastEditing
+    lastEditing = S.view === 'list' ? !!S.editing : null
 
     let h = ''
     if (S.view === 'ready') h = renderBar()
@@ -698,10 +817,23 @@ function createAssistant(replyBox) {
     const enter = shown !== lastShown
     lastShown = shown
     root.innerHTML = `<style>${UI_CSS}</style><div class="root ${enter ? 'enter' : ''}">${h}</div>`
+    // Description boxes grow to fit their text (no inner scrollbar).
+    for (const box of root.querySelectorAll('textarea.edit-desc, textarea.need-input')) {
+      box.style.height = 'auto'
+      box.style.height = `${box.scrollHeight + 2}px`
+    }
     const newBody = root.querySelector('.panel-body')
-    if (newBody && screen === lastScreen) newBody.scrollTop = scrollTop
+    if (newBody && screen === lastScreen) {
+      newBody.scrollTop = scrollTop
+      const moved = rowEl(anchorId)
+      if (moved && anchorTop != null) newBody.scrollTop += moved.getBoundingClientRect().top - anchorTop
+    }
     lastScreen = screen
     position()
+    for (const id of openingIds) {
+      const li = rowEl(id)
+      if (li) unfold(li)
+    }
 
     if (active) {
       const el = root.getElementById(active.id)
@@ -732,8 +864,15 @@ function createAssistant(replyBox) {
   }
 
   function renderPanel() {
-    let h = `<aside class="panel" aria-label="Assistente DALM"><div class="panel-head" title="Arraste para mover · duplo clique para voltar ao lado"><span class="badge sm">${SPARK(13)}</span><strong>Assistente DALM</strong>
-      <button class="link" data-a="openHelp">Como funciona</button><button class="link muted" data-a="hide">Esconder</button></div>`
+    // Header controls on the right, ? then −: plain icons, always visible,
+    // each with a text label shown on hover (data-tip). The empty title stops the header's own
+    // tooltip from showing over them.
+    let h = `<aside class="panel" aria-label="Assistente DALM"><div class="panel-head" title="Arraste para mover · duplo clique para voltar ao lado">
+      <span class="badge sm">${SPARK(13)}</span><strong>Assistente DALM</strong>
+      <span class="traffic">
+        <button class="tl tl-help" data-a="openHelp" aria-label="Como funciona" data-tip="Como funciona" title="">${ICON('question', 17)}</button>
+        <button class="tl tl-min" data-a="hide" aria-label="Esconder" data-tip="Esconder" title="">${ICON('minus', 17)}</button>
+      </span></div>`
 
     if (S.view === 'working' && S.error) {
       return h + `<div class="steps"><span class="message warn" role="alert">${esc(errorMessage(S.error))}</span>
@@ -763,7 +902,7 @@ function createAssistant(replyBox) {
       </div>
       <p class="request"><strong>O pedido:</strong> ${esc(S.request)}</p>
       ${renderNeeds()}
-      <div class="section">
+      <div class="section ${editSwap ? 'swap' : ''}">
         <div class="section-head"><strong>Plano de resposta:</strong>
           ${S.editing
             ? '<button class="link muted" data-a="cancelEdit">Anular</button><button class="link" data-a="finishEdit">Concluir</button>'
@@ -772,7 +911,7 @@ function createAssistant(replyBox) {
           ? 'Mude o texto, apague ou acrescente passos. O plano é seu.'
           : `O assistente escreve os passos com <span class="legend">${ICON('robot', 14)}</span>; nos seus <span class="legend">${ICON('user', 14)}</span> deixa um espaço no texto.`}</span>
         <ul class="rows">${S.points.map(S.editing ? renderPointEdit : renderPoint).join('')}${S.editing ? renderNewStep() : ''}</ul></div>
-      ${S.outside.length ? `<div class="section"><strong style="font-size:14px">Fora do email, faz você:</strong>
+      ${S.outside.length ? `<div class="section"><strong style="font-size:14px">Ações fora do email:</strong>
         <ul class="rows">${S.outside.map(renderOutside).join('')}</ul></div>` : ''}</div>`
 
     const missingInText = aiNeeds().filter((n) => !has(n.key) && S.points.some((p) => p.ai && p.needs.some((x) => x.key === n.key))).length
@@ -810,11 +949,24 @@ function createAssistant(replyBox) {
     const seen = new Map()
     for (const p of S.points) {
       if (p.owner !== 'ai') continue
-      for (const n of p.needs) if (!seen.has(n.key)) seen.set(n.key, n)
+      for (const n of p.needs) {
+        // A shared key keeps the first step's question and label; its options
+        // are grounded per step, so merge them (by value, at most 3).
+        const card = seen.get(n.key)
+        if (!card) { seen.set(n.key, { ...n, options: [...n.options] }); continue }
+        for (const o of n.options) {
+          const same = (x) => x.value.trim().toLowerCase() === o.value.trim().toLowerCase()
+          if (card.options.length < 3 && !card.options.some(same)) card.options.push(o)
+        }
+      }
     }
     return [...seen.values()]
   }
 
+  // "Falta saber" (REDESIGN_PLAN.md Round 2): one card per missing value,
+  // with the question first, where the value goes (the steps that use it,
+  // and once written, the sentence in the email around its blank), options
+  // found in the sources if any, and the field. Most cards have no options.
   function renderNeeds() {
     const needs = aiNeeds()
     if (!needs.length) return ''
@@ -822,8 +974,56 @@ function createAssistant(replyBox) {
     return `<div class="needs">
       <div class="section-head"><strong>Falta saber</strong><span>${missing ? `${missing} por preencher` : 'Tudo preenchido'}</span></div>
       <span class="hint">Não encontrei isto. Preencha ou deixe em branco: fica entre [ ] no texto.</span>
-      ${needs.map((n) => `<div class="field"><label for="need-${n.key}">${esc(n.label)}</label><input id="need-${n.key}" class="${has(n.key) ? 'filled' : ''}" placeholder="não encontrei" value="${esc(S.values[n.key] || '')}" data-key="${n.key}"></div>`).join('')}
+      ${needs.map(renderNeed).join('')}
     </div>`
+  }
+
+  const INPUT_MODE = { email: 'email', number: 'numeric', url: 'url', date: 'text', text: 'text' }
+
+  function renderNeed(n) {
+    const users = S.points.filter((p) => p.owner === 'ai' && p.needs.some((x) => x.key === n.key))
+    const first = users[0]
+    const value = (S.values[n.key] || '').trim()
+    const steps = users.map((p) => `<span class="pnum sm" style="--pc:${colorOf(p.id)}">${S.points.indexOf(p) + 1}</span>`).join('')
+    const sentence = users.map((p) => sentenceAround(p, n)).find(Boolean)
+    const where = sentence
+      ? `${steps}<span class="need-sentence">${sentence}</span>`
+      : `<span>${users.length > 1 ? 'Usado nos passos' : 'Usado no passo'}</span>${steps}`
+    // Options found in the sources drop down from the field, like browser
+    // autocomplete, while it is focused and empty, so they take no space of
+    // their own. A small pill inside the empty field says they exist.
+    const count = n.options.length
+    const pill = count && !value
+      ? `<button class="sugg-pill" data-a="focusNeed" data-key="${n.key}" tabindex="-1" aria-label="Ver sugestões">${count === 1 ? '1 sugestão' : `${count} sugestões`} ${ICON('chevron', 12)}</button>`
+      : ''
+    const menu = count
+      ? `<div class="sugg-menu" role="listbox" aria-label="Sugestões encontradas">${n.options.map((o) => `<button class="sugg" role="option" data-a="pickOption" data-key="${n.key}" data-value="${esc(o.value)}"><span>${esc(o.value)}</span><span class="sugg-src ${o.timeSensitive ? 'warn' : ''}">${o.timeSensitive ? 'pode estar desatualizado · ' : ''}de uma resposta anterior</span></button>`).join('')}</div>`
+      : ''
+    const located = first && blocks.has(first.id)
+    return `<div class="need ${value ? 'filled' : ''}" data-need="${n.key}" data-owner="${first ? first.id : ''}">
+      <label class="need-q" for="need-${n.key}">${esc(n.question)}</label>
+      <div class="need-where">${where}${located ? `<button class="link" data-a="showInEmail" data-id="${first.id}">ver no email</button>` : ''}</div>
+      <div class="need-field ${value ? 'has-value' : ''} ${pill ? 'has-pill' : ''}">
+        <textarea id="need-${n.key}" class="need-input ${value ? 'filled' : ''}" rows="1" inputmode="${INPUT_MODE[n.type]}" placeholder="${esc(n.hint || 'não encontrei')}" data-key="${n.key}" autocomplete="off">${esc(S.values[n.key] || '')}</textarea>
+        ${pill}${menu}
+      </div>
+    </div>`
+  }
+
+  // The sentence in the email around this value's blank, once the
+  // assistant has written the step: "…pode pedir novos dados através de [ ].".
+  function sentenceAround(point, need) {
+    const b = blocks.get(point.id)
+    if (!b || b.kind !== 'ai' || !b.segments) return ''
+    const i = b.segments.findIndex((s) => s.slot === need.key)
+    if (i < 0) return ''
+    const text = (segs) => segs.map((s) => s.slot ? (has(s.slot) ? fill(s.slot) : placeholder(point, s.slot)) : (s.text || '')).join('')
+    const before = text(b.segments.slice(0, i)).replace(/\s+/g, ' ')
+    const after = text(b.segments.slice(i + 1)).replace(/\s+/g, ' ')
+    const head = before.length > 48 ? `…${before.slice(-48).replace(/^\S*\s/, '')}` : before
+    const tail = after.length > 32 ? `${after.slice(0, 32).replace(/\s\S*$/, '')}…` : after
+    const blank = has(need.key) ? fill(need.key) : `[${need.label}]`
+    return `«${esc(head)}<mark>${esc(blank)}</mark>${esc(tail)}»`
   }
 
   // Where a point is at. Shown, never clicked. The assistant's points are done
@@ -854,14 +1054,14 @@ function createAssistant(replyBox) {
   function renderPoint(p) {
     const state = pointState(p)
     const isAI = p.owner === 'ai'
-    const open = S.openId === p.id
+    const open = S.openIds.includes(p.id)
     const owner = isAI ? 'o assistente' : 'você'
-    return `<li class="row-item ${open ? 'open' : ''} ${openingId === p.id ? 'opening' : ''} ${hoverId === p.id ? 'hl' : ''}" data-pid="${p.id}" style="--pc:${colorOf(p.id)}">
+    return `<li class="row-item ${open ? 'open' : ''} ${openingIds.includes(p.id) ? 'opening' : ''} ${hoverId === p.id ? 'hl' : ''}" data-pid="${p.id}" style="--pc:${colorOf(p.id)};--i:${S.points.indexOf(p)}">
       <button class="row-head" data-a="toggleRow" data-id="${p.id}" aria-expanded="${open}">
         <span class="state ${state}" role="img" aria-label="${STATE_LABEL[state]}">${STATE_ICON[state]}</span>
         <span class="pnum" aria-hidden="true">${S.points.indexOf(p) + 1}</span>
         <span class="row-text"><span class="row-title ${state === 'done' ? 'done' : ''}">${esc(p.title)}</span>${p.desc ? `<span class="row-sub">${esc(p.desc)}</span>` : ''}</span>
-        <span class="row-owner ${isAI ? 'ai' : ''}" title="Escreve: ${owner}">${ICON(isAI ? 'robot' : 'user', 15)}</span>
+        <span class="row-owner ${isAI ? 'ai' : ''} tip-end" data-tip="Escreve: ${owner}">${ICON(isAI ? 'robot' : 'user', 15)}</span>
         <span class="chev" aria-hidden="true">${ICON('chevron', 14)}</span>
       </button>
       ${open ? renderPointBody(p, state) : ''}
@@ -902,24 +1102,27 @@ function createAssistant(replyBox) {
   // Changes apply as they are typed; "Anular" restores the plan as it was.
   function renderPointEdit(p) {
     const n = S.points.indexOf(p) + 1
-    return `<li class="row-item editing" data-pid="${p.id}" style="--pc:${colorOf(p.id)}">
+    return `<li class="row-item editing" data-pid="${p.id}" style="--pc:${colorOf(p.id)};--i:${S.points.indexOf(p)}">
       <div class="row-head static">
         <span class="pnum" aria-hidden="true">${n}</span>
         <span class="edit-fields">
           <input id="et-${p.id}" class="edit-title" value="${esc(p.title)}" placeholder="Título do passo" aria-label="Título do passo ${n}" data-edit-field="title" data-id="${p.id}">
-          <input id="ed-${p.id}" class="edit-desc" value="${esc(p.desc)}" placeholder="O que a resposta deve fazer" aria-label="Descrição do passo ${n}" data-edit-field="desc" data-id="${p.id}">
+          <textarea id="ed-${p.id}" class="edit-desc" rows="2" placeholder="O que a resposta deve fazer" aria-label="Descrição do passo ${n}" data-edit-field="desc" data-id="${p.id}">${esc(p.desc)}</textarea>
         </span>
-        <button class="icon-btn" data-a="removePoint" data-id="${p.id}" aria-label="Apagar «${esc(p.title)}»" title="Apagar">${ICON('remove', 22)}</button>
+        <button class="icon-btn tip-end" data-a="removePoint" data-id="${p.id}" aria-label="Apagar «${esc(p.title)}»" data-tip="Apagar passo">${ICON('remove', 22)}</button>
       </div>
     </li>`
   }
 
   function renderNewStep() {
-    return `<li class="row-item editing">
+    return `<li class="row-item editing" style="--i:${S.points.length}">
       <form class="row-head static" data-form="add">
         <span class="pnum ghost" aria-hidden="true">${S.points.length + 1}</span>
-        <span class="edit-fields"><input id="new-step" class="edit-title" value="${esc(S.newText)}" placeholder="Novo passo, ex.: Indicar a quem contactar" aria-label="Novo passo" data-new="1"></span>
-        <button class="icon-btn add" type="submit" aria-label="Acrescentar passo" title="Acrescentar">${ICON('add', 22)}</button>
+        <span class="edit-fields">
+          <input id="new-step" class="edit-title" value="${esc(S.newText)}" placeholder="Novo passo, ex.: Contacto" aria-label="Título do novo passo" data-new="title">
+          <textarea id="new-step-desc" class="edit-desc" rows="2" placeholder="O que a resposta deve fazer, ex.: indicar a quem contactar" aria-label="Descrição do novo passo" data-new="desc">${esc(S.newDesc)}</textarea>
+        </span>
+        <button class="icon-btn add tip-end" type="submit" aria-label="Acrescentar passo" data-tip="Acrescentar passo">${ICON('add', 22)}</button>
       </form>
     </li>`
   }
@@ -927,6 +1130,20 @@ function createAssistant(replyBox) {
   // Where a point came from (REDESIGN_PLAN.md E5), so people can judge it:
   // the past answers it rests on, in the staff's own words. A point for the
   // assistant with no source says so plainly.
+  // Escapes an excerpt and highlights the option values taken from it, so the
+  // person sees each option in its original context.
+  function markValues(text, values) {
+    const lower = text.toLowerCase()
+    let best = null
+    for (const v of values) {
+      const i = lower.indexOf(v.trim().toLowerCase())
+      if (i >= 0 && v.trim() && (!best || i < best.i)) best = { i, len: v.trim().length }
+    }
+    if (!best) return esc(text)
+    return esc(text.slice(0, best.i)) + `<mark>${esc(text.slice(best.i, best.i + best.len))}</mark>` +
+      markValues(text.slice(best.i + best.len), values)
+  }
+
   function renderSources(p) {
     const found = (p.sourceIds || []).map((id) => (S.sourceDetails || []).find((s) => s.id === id)).filter(Boolean)
     if (!found.length) return p.owner === 'ai' ? '<span class="srcs-none">Não encontrei uma resposta anterior sobre isto.</span>' : ''
@@ -935,7 +1152,7 @@ function createAssistant(replyBox) {
       return isNaN(date) ? '' : ` · ${date.toLocaleDateString('pt-PT', { month: 'short', year: 'numeric' })}`
     }
     return `<div class="srcs"><span class="srcs-head">Com base em ${found.length === 1 ? 'uma resposta anterior' : `${found.length} respostas anteriores`}:</span>
-      ${found.map((s) => `<figure class="src"><figcaption>«${esc(s.question)}»${s.date ? when(s.date) : ''}</figcaption><blockquote>${esc(s.excerpt)}</blockquote></figure>`).join('')}
+      ${found.map((s) => `<figure class="src"><figcaption>«${esc(s.question)}»${s.date ? when(s.date) : ''}</figcaption><blockquote>${markValues(s.excerpt, p.needs.flatMap((n) => n.options.filter((o) => o.sourceId === s.id).map((o) => o.value)))}</blockquote></figure>`).join('')}
     </div>`
   }
 
@@ -983,7 +1200,7 @@ function createAssistant(replyBox) {
     return `[${need ? need.label : key}]`
   }
   const paragraphText = (point, segments) => segments
-    .map((s) => s.slot ? (has(s.slot) ? S.values[s.slot].trim() : placeholder(point, s.slot)) : (s.text || ''))
+    .map((s) => s.slot ? (has(s.slot) ? fill(s.slot) : placeholder(point, s.slot)) : (s.text || ''))
     .join('')
 
   // Gmail's signature or quoted text, or our own sign-off: text goes above it.
@@ -1088,7 +1305,7 @@ function createAssistant(replyBox) {
         const mark = placeholder(point, s.slot)
         const walker = document.createTreeWalker(b.el, NodeFilter.SHOW_TEXT)
         for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-          if (node.nodeValue.includes(mark)) { node.nodeValue = node.nodeValue.replace(mark, S.values[s.slot].trim()); changed = true }
+          if (node.nodeValue.includes(mark)) { node.nodeValue = node.nodeValue.replace(mark, fill(s.slot)); changed = true }
         }
       }
     }
@@ -1219,7 +1436,7 @@ function createAssistant(replyBox) {
     askList: () => runWork(STEPS_LIST, requestList(replyBox), (result) => {
       sent = result.sent
       requester = result.requester
-      return { view: 'list', hadList: true, ...normalizeList(result.list), values: {}, stepsOpen: false, genError: null, openId: null, moreOpen: false }
+      return { view: 'list', hadList: true, ...normalizeList(result.list), values: {}, stepsOpen: false, genError: null, openIds: [], moreOpen: false }
     }, 'askList'),
     decline: () => leaveThen({ view: 'declined' }),
     reopen: () => set({ view: S.hadList ? 'list' : 'ready' }),
@@ -1229,14 +1446,29 @@ function createAssistant(replyBox) {
     openHelp: () => showGuide(),
     toggleSteps: () => set({ stepsOpen: !S.stepsOpen }),
     toggleRow: (el) => {
-      const opening = S.openId !== el.dataset.id
-      set({ openId: opening ? el.dataset.id : null })
-      if (opening) scrollToSection(el.dataset.id)
+      const id = el.dataset.id
+      if (S.openIds.includes(id)) {
+        foldThen(id, () => { keepInPlace = id; set({ openIds: S.openIds.filter((x) => x !== id) }) })
+        return
+      }
+      keepInPlace = id
+      set({ openIds: [...S.openIds, id] })
+      scrollToSection(id)
     },
-    toggleMore: () => set({ moreOpen: !S.moreOpen }),
-    setOwner: (el) => updateItem(el, { owner: el.dataset.owner }),
-    markDone: (el) => updateItem(el, { done: true }),
-    undoDone: (el) => updateItem(el, { done: false }),
+    toggleMore: () => S.moreOpen ? closeMenuThen(() => set({ moreOpen: false })) : set({ moreOpen: true }),
+    setOwner: (el) => { keepInPlace = el.dataset.id; updateItem(el, { owner: el.dataset.owner }) },
+    // An option found in the sources fills the field (and the email); it can
+    // still be edited. Clicking the chosen one again clears it.
+    // A suggestion fills the field (and the email) and the list closes,
+    // since it only shows while the field is empty; clear it to see it again.
+    pickOption: (el) => {
+      set({ values: { ...S.values, [el.dataset.key]: el.dataset.value } })
+      refillParagraphs()
+    },
+    focusNeed: (el) => { const field = root.getElementById(`need-${el.dataset.key}`); if (field) field.focus() },
+    showInEmail: (el) => { scrollToSection(el.dataset.id); setHover(el.dataset.id) },
+    markDone: (el) => { keepInPlace = el.dataset.id; updateItem(el, { done: true }) },
+    undoDone: (el) => { keepInPlace = el.dataset.id; updateItem(el, { done: false }) },
     generate: () => writeReply(false),
     regenerate: () => writeReply(true),
     retryGenerate: () => writeReply(S.retryAgain),
@@ -1246,13 +1478,14 @@ function createAssistant(replyBox) {
       set({ moreOpen: false, points: S.points.map((p) => p.ai ? { ...p, ai: false } : p) })
       syncWithEmail()
     },
-    startEdit: () => set({ editing: true, snapshot: S.points, newText: '', openId: null, moreOpen: false }),
-    finishEdit: () => set({ editing: false, newText: '' }),
+    startEdit: () => set({ editing: true, snapshot: S.points, newText: '', newDesc: '', moreOpen: false }),
+    finishEdit: () => set({ editing: false, newText: '', newDesc: '' }),
     // Restores the plan's text. A deleted step's section can't come back to
     // the email, so a restored step without one is "not written" again.
     cancelEdit: () => set({
       editing: false,
       newText: '',
+      newDesc: '',
       points: (S.snapshot || S.points).map((p) => blocks.has(p.id) ? p : { ...p, ai: false, done: p.ai ? false : p.done })
     }),
     // Deleting a step also removes its section from the email, but only if
@@ -1267,7 +1500,7 @@ function createAssistant(replyBox) {
         }
         blocks.delete(id)
       }
-      set({ points: S.points.filter((p) => p.id !== id) })
+      set({ points: S.points.filter((p) => p.id !== id), openIds: S.openIds.filter((x) => x !== id) })
       if (b) tellGmail()
     }
   }
@@ -1285,15 +1518,16 @@ function createAssistant(replyBox) {
     }
     else if (t.dataset.editField) {
       set({ points: S.points.map((p) => p.id === t.dataset.id ? { ...p, [t.dataset.editField]: t.value } : p) })
-    } else if (t.dataset.new) set({ newText: t.value })
+    } else if (t.dataset.new) set({ [t.dataset.new === 'desc' ? 'newDesc' : 'newText']: t.value })
   })
-  // A new step starts as the person's, with its text as the title; its
-  // description can be filled in on its own line right away.
+  // A new step starts as the person's. If only the description was filled
+  // in, its first words become the title.
   root.addEventListener('submit', (e) => {
     e.preventDefault()
-    const title = S.newText.trim()
+    const desc = S.newDesc.trim()
+    const title = S.newText.trim() || desc.split(/\s+/).slice(0, 4).join(' ').replace(/[.,;:]+$/, '')
     if (!title) return
-    set({ newText: '', points: S.points.concat([{ id: 'n' + Date.now(), title, desc: '', needs: [], owner: 'user', sourceIds: [], done: false, ai: false, writing: false }]) })
+    set({ newText: '', newDesc: '', points: S.points.concat([{ id: 'n' + Date.now(), title, desc, needs: [], owner: 'user', sourceIds: [], done: false, ai: false, writing: false }]) })
   })
 
   // Typing in the reply collapses the ready bar into "Mostrar assistente".

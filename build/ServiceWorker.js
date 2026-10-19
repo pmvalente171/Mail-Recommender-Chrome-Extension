@@ -94,15 +94,15 @@ async function mockList(payload) {
     // owner: the backend's suggestion of who handles each point ('ai' or
     // 'user'); the person can switch it in the panel.
     points: [
-      { id: 'c2', title: 'Vagas', desc: 'dizer quantas vagas há no concurso de 2026/27.', needs: [{ key: 'vagas', label: 'N.º de vagas' }], owner: 'ai', source_ids: ['s1'] },
-      { id: 'c3', title: 'Condições de acesso', desc: 'indicar as provas de ingresso e a nota mínima.', needs: [{ key: 'provas', label: 'Provas de ingresso' }, { key: 'nota', label: 'Nota mínima' }], owner: 'ai', source_ids: ['s1'] },
-      { id: 'c4', title: 'Candidatura', desc: 'explicar onde e quando se candidata.', needs: [{ key: 'datas', label: 'Datas da 1.ª fase' }], owner: 'ai', source_ids: [] },
+      { id: 'c2', title: 'Vagas', desc: 'dizer quantas vagas há no concurso de 2026/27.', needs: [{ key: 'vagas', label: 'N.º de vagas', question: 'Quantas vagas tem o curso no concurso de 2026/27?', type: 'number', hint: 'ex.: 25', options: [] }], owner: 'ai', source_ids: ['s1'] },
+      { id: 'c3', title: 'Condições de acesso', desc: 'indicar as provas de ingresso e a nota mínima.', needs: [{ key: 'provas', label: 'Provas de ingresso', question: 'Quais são as provas de ingresso?', type: 'text', options: [] }, { key: 'nota', label: 'Nota mínima', question: 'Qual é a nota mínima de candidatura?', type: 'text', options: [] }], owner: 'ai', source_ids: ['s1'] },
+      { id: 'c4', title: 'Candidatura', desc: 'explicar onde e quando se candidata.', needs: [{ key: 'datas', label: 'Datas da 1.ª fase', question: 'Quando decorre a 1.ª fase de candidatura?', type: 'date', hint: 'ex.: 15/09/2026', options: [{ value: '20 de julho', source_id: 's1', time_sensitive: true }] }], owner: 'ai', source_ids: ['s1'] },
       { id: 'c5', title: 'Site', desc: 'lamentar que a informação ainda não esteja no nosso site.', needs: [], owner: 'user', source_ids: [] }
     ],
     outside: [{ id: 'o1', text: 'Pedir à equipa do site que publique a página do curso.' }],
     steps,
     sources: ['Resposta anterior da DALM: «Quais as condições de acesso à licenciatura?» (simulada)'],
-    source_details: [{ id: 's1', question: 'Quais as condições de acesso à licenciatura? (simulada)', excerpt: 'As condições de acesso estão publicadas na página do curso e no site da DGES… (texto simulado)', date: null }]
+    source_details: [{ id: 's1', question: 'Quais as condições de acesso à licenciatura? (simulada)', excerpt: 'As condições de acesso estão na página do curso; a 1.ª fase decorreu até 20 de julho… (texto simulado)', date: null }]
   }
 }
 

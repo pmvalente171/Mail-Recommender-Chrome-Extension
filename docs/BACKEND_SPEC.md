@@ -112,7 +112,12 @@ Called when the person clicks **Preparar a lista** (or automatically when a repl
       "id": "c2",
       "title": "Vagas",
       "desc": "dizer quantas vagas há no concurso de 2026/27.",
-      "needs": [ { "key": "vagas", "label": "N.º de vagas em 2026/27" } ],
+      "needs": [ {
+        "key": "vagas", "label": "N.º de vagas",
+        "question": "Quantas vagas tem o curso no concurso de 2026/27?",
+        "type": "number", "hint": "ex.: 25",
+        "options": []
+      } ],
       "owner": "ai",
       "source_ids": ["s1"]
     },
@@ -163,7 +168,11 @@ Called when the person clicks **Preparar a lista** (or automatically when a repl
 | `points[].desc` | string | At most ~12 words. Starts in lowercase with an infinitive verb and ends with a full stop: "dizer quantas vagas…", "indicar…", "explicar…", "lamentar…". Shown when the point is opened. |
 | `points[].needs` | array | Facts the reply needs that you **could not find in your sources**, or found only in old or time-sensitive answers (rule 1). Empty if you found everything or the point needs no facts. **At most ~4 needs in the whole list**: if more facts are uncertain, give the point to the person (`"owner": "user"`) instead of adding blanks. |
 | `needs[].key` | string | **Must match `^[a-z0-9_]+$`** (it is used as an HTML id). Keys are **global to the list**: if two points need the same fact, use the same key and the person types it once. Different facts need different keys. |
-| `needs[].label` | string | Short label in pt-PT, capitalised, phrased as **what the person fills in**, specific enough to answer without rereading the email: "N.º de vagas em 2026/27", "Datas da 1.ª fase". |
+| `needs[].label` | string | **At most 4 words**, pt-PT, capitalised. Used inside the email's brackets while the value is missing: `[N.º de vagas]`, `[Email de recuperação]`. |
+| `needs[].question` | string | The need as **one plain pt-PT question ending in "?"**, specific enough to answer without rereading the email; no redaction labels. Shown as the heading of the field in the panel: "Quantas vagas tem o curso no concurso de 2026/27?". |
+| `needs[].type` | `"text"` \| `"email"` \| `"date"` \| `"number"` \| `"url"` | Kind of field. Default `"text"`. `"number"` only for counts (places, instalments); amounts are `"text"` ("697 €"). |
+| `needs[].hint` | string, optional | Format example, **set server-side from `type`**, never by the model: email → "ex.: nome@fct.unl.pt", date → "ex.: 15/09/2026", url → "ex.: https://…", number → "ex.: 25". Omitted for `"text"`. |
+| `needs[].options` | array, optional | Up to 3 candidate values **found in the retrieved sources** but not confirmed: `[{ "value": "…", "source_id": "s1", "time_sensitive": false }]`. Kept only if `value` appears verbatim (whitespace/case-normalised) in the `excerpt` of that source in `source_details`, matches the need's `type`, and `source_id` is one of the point's own `source_ids`. `value` is display text, never normalised (no ISO dates, no added years). Never personal data. `time_sensitive: true` when the source is tagged `TEMPORAL_*`/`REG_AMOUNT`/`REG_EDITAL` or the value names an earlier academic year. Omitted or `[]` when none. The extension never preselects an option. |
 | `points[].owner` | `"ai"` or `"user"` | Your **suggestion** of who handles the point. The person can switch it. If missing or anything else, the extension treats it as `"user"`. See the guidelines below. |
 | `outside` | array | Tasks the person must do **outside the email**: in CLIP, SinGAP, Gesdoc, or by asking a colleague or service. Each `{ "id": "o1", "text": "…" }`, `text` an imperative sentence in pt-PT. Never things the AI can do. Can be empty. |
 | `steps` | array of strings | What you did, past tense, first person, pt-PT. Shown under "Ver passos". The extension adds the line "Não encontrei N informações" itself, so do not include it. |
@@ -350,3 +359,4 @@ curl -s localhost:4000/generate -H 'Content-Type: application/json' -d '{
 ## Revision history
 
 - **2026-10-16, after the heuristic evaluation** (agreed by Pedro and both sessions; plan in `docs/REDESIGN_PLAN.md`): `/list` returns 1–4 points with short titles and descriptions; at most ~4 needs per list, with labels phrased as what to fill in; conservative use of past answers (rule 1); new additive fields `points[].source_ids` and `source_details`. Nothing existing was removed or renamed.
+- **2026-10-19, "Falta saber" round 2** (agreed by Pedro and both sessions; `docs/REDESIGN_PLAN.md`, Round 2): `needs[]` gains `question`, `type`, `hint` (server-side from `type`) and `options` (verbatim-grounded, with `time_sensitive`); `label` becomes ≤4 words and is used for the brackets in the email. Additive: nothing removed or renamed.
