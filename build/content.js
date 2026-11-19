@@ -367,7 +367,7 @@ button.row-head:hover{background:var(--hover)}
 .icon-btn.add{color:var(--ai-strong)}
 .icon-btn.add:hover{background:var(--ai-tint)}
 
-/* Who writes a step (Você / Assistente) and the person's row actions */
+/* Who writes a step (Eu / Assistente) and the person's row actions */
 .seg{display:inline-flex;align-self:flex-start;padding:2px;border:1px solid var(--field-line);border-radius:var(--r-full);background:var(--surface)}
 .seg button{display:inline-flex;align-items:center;gap:var(--s-1);min-height:28px;padding:0 var(--s-3);border:0;border-radius:var(--r-full);background:transparent;color:var(--ink-2);font-size:var(--t-caption);font-weight:600}
 .seg button[data-owner="user"][aria-pressed="true"]{background:var(--you-strong);color:#fff}
@@ -504,7 +504,7 @@ function showGuide() {
     <div class="root guide" role="dialog" aria-label="Como funciona o Assistente DALM"><span class="eyebrow">Assistente DALM · opcional</span>
     <strong>Uma ajuda para não esquecer nada nas respostas</strong><ol>
     <li><span class="num">1</span><span>Clique em <strong>Preparar a lista</strong>. O assistente diz o que percebeu do pedido e o que a resposta deve tratar.</span></li>
-    <li><span class="num">2</span><span>Escolha quem trata cada ponto: você ${ICON('user', 15)} ou o assistente ${ICON('robot', 15)}. Se faltar informação, preencha-a ou deixe em branco.</span></li>
+    <li><span class="num">2</span><span>Em cada ponto, escolha se fica para si ${ICON('user', 15)} ou para o assistente ${ICON('robot', 15)}. Se faltar informação, preencha-a ou deixe em branco.</span></li>
     <li><span class="num">3</span><span>Se quiser, clique em <strong>Gerar os pontos do assistente</strong>: ele só escreve os pontos que lhe deu. Leia o texto e confirme cada um. <strong>Nada é enviado sem si.</strong></span></li>
     </ol>
     <label class="persist"><input type="checkbox" ${prefs.prepareAlways ? 'checked' : ''} data-a="toggleAlways">Preparar esta lista sempre que abro uma resposta (fica guardado)</label>
@@ -1103,13 +1103,13 @@ function createAssistant(replyBox) {
     const state = pointState(p)
     const isAI = p.owner === 'ai'
     const open = S.openIds.includes(p.id)
-    const owner = isAI ? 'o assistente' : 'você'
+    const owner = isAI ? 'Fica para o assistente' : 'Fica para si'
     return `<li class="row-item ${open ? 'open' : ''} ${openingIds.includes(p.id) ? 'opening' : ''} ${hoverId === p.id ? 'hl' : ''}" data-pid="${p.id}" style="${stepVars(p.id)};--i:${S.points.indexOf(p)}">
       <button class="row-head" data-a="toggleRow" data-id="${p.id}" aria-expanded="${open}">
         <span class="state ${state}" role="img" aria-label="${STATE_LABEL[state]}">${STATE_ICON[state]}</span>
         <span class="pnum" aria-hidden="true">${S.points.indexOf(p) + 1}</span>
         <span class="row-text"><span class="row-title ${state === 'done' ? 'done' : ''}">${esc(p.title)}</span>${p.desc ? `<span class="row-sub">${esc(p.desc)}</span>` : ''}</span>
-        <span class="row-owner ${isAI ? 'ai' : ''} tip-end" data-tip="Escreve: ${owner}">${ICON(isAI ? 'robot' : 'user', 15)}</span>
+        <span class="row-owner ${isAI ? 'ai' : ''} tip-end" data-tip="${owner}">${ICON(isAI ? 'robot' : 'user', 15)}</span>
         <span class="chev" aria-hidden="true">${ICON('chevron', 14)}</span>
       </button>
       ${open ? renderPointBody(p, state) : ''}
@@ -1138,7 +1138,7 @@ function createAssistant(replyBox) {
     return `<div class="row-body">
       ${renderSources(p)}
       <div class="seg" role="group" aria-label="Quem escreve «${esc(p.title)}»" ${locked ? `title="Retire o texto do assistente para mudar"` : ''}>
-        <button data-a="setOwner" data-owner="user" data-id="${p.id}" aria-pressed="${!isAI}" ${locked ? 'disabled' : ''}>${ICON('user', 15)} Você</button>
+        <button data-a="setOwner" data-owner="user" data-id="${p.id}" aria-pressed="${!isAI}" ${locked ? 'disabled' : ''}>${ICON('user', 15)} Eu</button>
         <button data-a="setOwner" data-owner="ai" data-id="${p.id}" aria-pressed="${isAI}" ${locked ? 'disabled' : ''}>${ICON('robot', 15)} Assistente</button>
       </div>
       <div class="out"><span>↳ ${out}</span>${action}</div>
