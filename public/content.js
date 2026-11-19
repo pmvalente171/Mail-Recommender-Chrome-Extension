@@ -173,6 +173,7 @@ function normalizeList(list) {
     points: (list.points || []).map((p, i) => ({
       id: String(p.id || `p${i}`), title: p.title || '', desc: p.desc || '',
       needs: (p.needs || []).map(normalizeNeed), owner: p.owner === 'ai' ? 'ai' : 'user',
+      suggested: p.owner === 'ai' ? 'ai' : 'user', // kept for the study log
       sourceIds: (p.source_ids || []).map(String),
       done: false, ai: false, writing: false
     })),
@@ -208,6 +209,81 @@ const prefsReady = chrome.storage.sync.get({ guideSeen: false, prepareAlways: fa
 function savePref(key, value) {
   prefs[key] = value
   if (extensionAlive()) chrome.storage.sync.set({ [key]: value }).catch(() => {})
+}
+
+// --- Study settings and logging (BACKEND_SPEC.md §6–7) ---------------------
+// GET /config says the participant's phase, whether generation is shown, and
+// whether they consented to text being stored. Until it answers, or if it
+// fails, the defaults apply: generation shown, no text stored.
+const study = { phase: 2, generate_enabled: true, text_logging_consent: false }
+let studyLoaded = false // after the first answer (or failure)
+let studyLoading = null
+function loadStudyConfig() {
+  if (studyLoading) return studyLoading
+  studyLoading = callBackend('dalm:config', {})
+    .then((c) => {
+      if (!c) return
+      study.phase = c.phase ?? study.phase
+      study.generate_enabled = c.generate_enabled !== false
+      study.text_logging_consent = c.text_logging_consent === true
+    })
+    .catch(() => {})
+    .finally(() => { studyLoading = null; studyLoaded = true })
+  return studyLoading
+}
+
+// Study events wait here and go to the service worker in batches: every
+// LOG_FLUSH_MS, when a reply is sent, and when the page is hidden or closed.
+// The service worker adds the participant ID and keeps whatever the backend
+// doesn't accept for the next batch.
+// Text goes only in an event's "content" object, only for participants who
+// consented, and always through `redact` first, like the thread (HANDOFF.md
+// rule 7). Without consent the same events go out without "content".
+const LOG_FLUSH_MS = 15000
+let logQueue = []
+
+function logEvent(event, fields, content, names) {
+  // The phase is stamped when the event is sent, once /config has answered.
+  const e = { event, ticket: null, phase: null, ts: new Date().toISOString(), ...fields }
+  if (content && study.text_logging_consent) e.content = redactContent(content, names || [])
+  logQueue.push(e)
+  return e
+}
+
+function redactContent(value, names) {
+  if (typeof value === 'string') return redact(value, names)
+  if (Array.isArray(value)) return value.map((v) => redactContent(v, names))
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redactContent(v, names)]))
+  return value
+}
+
+function flushLog() {
+  if (!logQueue.length || !extensionAlive()) return
+  if (!studyLoaded) { loadStudyConfig().then(flushLog); return }
+  const events = logQueue
+  logQueue = []
+  for (const e of events) if (e.phase === null) e.phase = study.phase
+  // A failed send is kept by the service worker; only an unreachable one
+  // (e.g. while it restarts) puts the events back here.
+  chrome.runtime.sendMessage({ type: 'dalm:log', payload: { events } })
+    .catch(() => { if (extensionAlive()) logQueue = events.concat(logQueue) })
+}
+setInterval(flushLog, LOG_FLUSH_MS)
+window.addEventListener('pagehide', flushLog)
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushLog() })
+loadStudyConfig()
+
+// Characters to insert, delete or change to turn a into b (Levenshtein).
+function editDistance(a, b) {
+  a = a.slice(0, 4000)
+  b = b.slice(0, 4000)
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i]
+    for (let j = 1; j <= b.length; j++) row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+    prev = row
+  }
+  return prev[b.length]
 }
 
 // --- Styles -----------------------------------------------------------------
@@ -512,7 +588,10 @@ function showGuide() {
   // "Preparar sempre" lives here rather than in the panel footer, which it
   // crowded (HANDOFF.md open issue 10).
   root.addEventListener('change', (e) => {
-    if (e.target.dataset.a === 'toggleAlways') savePref('prepareAlways', e.target.checked)
+    if (e.target.dataset.a === 'toggleAlways') {
+      savePref('prepareAlways', e.target.checked)
+      logEvent('pref_prepare_always', { value: e.target.checked })
+    }
   })
   root.addEventListener('click', (e) => { if (e.target.closest('[data-a="closeGuide"]')) closeGuide() })
   root.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeGuide() })
@@ -546,6 +625,23 @@ function createAssistant(replyBox) {
   }
   let timer = null
   let workToken = 0 // bumped on cancel, so a late response is ignored
+
+  // Study events from this reply carry its ticket (the hashed thread ID, the
+  // same one sent to /list), and their text has the senders' names removed.
+  // Reading the thread ID and the senders' names reads nothing of the email.
+  let ticket = null
+  const ticketReady = Promise.resolve(findThreadView(replyBox))
+    .then((tv) => tv && sha256(getThreadId(tv)))
+    .then((t) => { ticket = t || null }, () => {})
+  const senderNames = () => {
+    const tv = findThreadView(replyBox)
+    return tv ? [...tv.querySelectorAll('.gD')].map((s) => s.getAttribute('name') || s.textContent.trim()).filter(Boolean) : []
+  }
+  function log(event, fields, content) {
+    const e = logEvent(event, fields, content, content ? senderNames() : [])
+    if (ticket) e.ticket = ticket
+    else ticketReady.then(() => { e.ticket = ticket })
+  }
 
   function set(patch) {
     S = Object.assign({}, S, typeof patch === 'function' ? patch(S) : patch)
@@ -935,7 +1031,9 @@ function createAssistant(replyBox) {
     const writing = S.points.some((p) => p.writing)
     const wroteSomething = blocks.size > 0
     const toWrite = pointsToWrite()
-    const regenerable = regenerableIds()
+    // List-only phase (GET /config): no generation buttons at all.
+    const canGenerate = study.generate_enabled
+    const regenerable = canGenerate ? regenerableIds() : []
     const doneCount = S.points.filter((p) => pointState(p) === 'done').length
     const totalNeeds = aiNeeds().length
     const stepItems = S.steps.map((s) => `<li>${esc(s)}</li>`)
@@ -957,7 +1055,7 @@ function createAssistant(replyBox) {
             : `<span>${doneCount} de ${S.points.length} feitos</span><button class="link" data-a="startEdit">Editar</button>`}</div>
         <span class="hint">${S.editing
           ? 'Mude o texto, apague ou acrescente passos. O plano é seu.'
-          : `O assistente escreve os passos com <span class="legend">${ICON('robot', 14)}</span>; nos seus <span class="legend">${ICON('user', 14)}</span> deixa um espaço no texto.`}</span>
+          : !canGenerate ? '' : `O assistente escreve os passos com <span class="legend">${ICON('robot', 14)}</span>; nos seus <span class="legend">${ICON('user', 14)}</span> deixa um espaço no texto.`}</span>
         <ul class="rows">${S.points.map(S.editing ? renderPointEdit : renderPoint).join('')}${S.editing ? renderNewStep() : ''}</ul></div>
       ${S.outside.length ? `<div class="section"><strong style="font-size:var(--t-body)">Ações fora do email:</strong>
         <ul class="rows">${S.outside.map(renderOutside).join('')}</ul></div>` : ''}</div>`
@@ -980,9 +1078,9 @@ function createAssistant(replyBox) {
     ].join('')
     const buttons = writing
       ? '<button class="btn-secondary" data-a="cancelWriting">Cancelar</button>'
-      : S.genError
+      : S.genError && canGenerate
       ? '<button class="btn-primary" data-a="retryGenerate">Tentar outra vez</button>'
-      : (toWrite.length ? `<button class="btn-primary" data-a="generate">${SPARK(15)} ${wroteSomething ? 'Escrever o que falta' : 'Escrever a resposta'}</button>` : '') +
+      : (toWrite.length && canGenerate ? `<button class="btn-primary" data-a="generate">${SPARK(15)} ${wroteSomething ? 'Escrever o que falta' : 'Escrever a resposta'}</button>` : '') +
         (more ? `<button class="btn-more" data-a="toggleMore" aria-expanded="${!!S.moreOpen}" aria-haspopup="true">Mais ${ICON('chevron', 14)}</button>` : '')
 
     h += `<div class="panel-foot">${S.moreOpen && !writing ? `<div class="menu ${moreOpening ? 'opening' : ''}" role="menu">${more}</div>` : ''}
@@ -991,8 +1089,8 @@ function createAssistant(replyBox) {
   }
 
   // The values the assistant could not find, for its own points, once each
-  // (keys are shared across points). They fill its text and never leave the
-  // browser.
+  // (keys are shared across points). They fill its text and are never sent to
+  // the model (only to the study log, redacted, with consent).
   function aiNeeds() {
     const seen = new Map()
     for (const p of S.points) {
@@ -1227,7 +1325,8 @@ function createAssistant(replyBox) {
   // While that text is unchanged the paragraph is the assistant's: values are
   // refilled and "Gerar outra versão" replaces it. Once the person edits it,
   // it is theirs: only its still-empty [placeholders] are filled in
-  // (HANDOFF.md section 3 and open issue 6). Values never leave the browser.
+  // (HANDOFF.md section 3 and open issue 6). Values are never sent to the
+  // model; only the study log carries them, redacted, and only with consent.
   const blocks = new Map() // point id → { point, el, gap, segments, rendered }
   let frame = [] // greeting, thanks and sign-off lines: { el, rendered }
   let sent = null // the redacted thread and ticket sent to /list, reused for /generate
@@ -1311,7 +1410,7 @@ function createAssistant(replyBox) {
     if (existing && existing.el.isConnected) {
       if (!untouched(existing)) return false
       existing.el.textContent = text
-      Object.assign(existing, { point, kind: 'ai', segments, rendered: text })
+      Object.assign(existing, { point, kind: 'ai', segments, rendered: text, placedAt: Date.now() })
       return true
     }
     insertBlock(point, { kind: 'ai', segments, rendered: text })
@@ -1333,7 +1432,7 @@ function createAssistant(replyBox) {
     const before = next && next.parentNode === replyBox ? next : null
     replyBox.insertBefore(el, before)
     replyBox.insertBefore(gap, before)
-    blocks.set(point.id, { point, el, gap, ...block })
+    blocks.set(point.id, { point, el, gap, placedAt: Date.now(), ...block })
   }
 
   // Puts the values typed in the panel into the email.
@@ -1388,16 +1487,23 @@ function createAssistant(replyBox) {
         if (b.gap.isConnected && !b.gap.textContent.trim()) b.gap.remove()
         blocks.delete(p.id)
         updates[p.id] = b.kind === 'ai' ? { ai: false } : { done: false }
+        log('point_undone', { point: p.id, ai: b.kind === 'ai', via: 'deleted', seconds_since_generated: secondsSince(b) })
         continue
       }
       if (b.kind === 'slot') {
         const typed = !untouched(b) && norm(b.el.textContent) !== ''
-        if (typed !== !!p.done) updates[p.id] = { done: typed }
+        if (typed !== !!p.done) {
+          updates[p.id] = { done: typed }
+          log(typed ? 'point_done' : 'point_undone', { point: p.id, ai: false, via: 'slot', seconds_since_generated: secondsSince(b) }, typed ? { text: norm(b.el.textContent) } : null)
+        }
       }
     }
     if (Object.keys(updates).length) set({ points: S.points.map((p) => updates[p.id] ? { ...p, ...updates[p.id] } : p) })
     else renderSoon()
   }
+
+  const secondsSince = (b) => b && b.placedAt ? Math.round((Date.now() - b.placedAt) / 1000) : null
+  const sectionText = (id) => { const b = blocks.get(id); return b && b.el.isConnected ? norm(b.el.textContent) : null }
 
   // Re-render shortly after typing in the email, so icons and counts follow.
   let renderTimer = null
@@ -1421,7 +1527,9 @@ function createAssistant(replyBox) {
   function writeReply(again) {
     const aiIds = again ? regenerableIds() : pointsToWrite().filter((p) => p.owner === 'ai').map((p) => p.id)
     const slotIds = again ? [] : pointsToWrite().filter((p) => p.owner === 'user').map((p) => p.id)
-    if ((!aiIds.length && !slotIds.length) || !sent) return
+    if ((!aiIds.length && !slotIds.length) || !sent || !study.generate_enabled) return
+    if (again) log('regenerate_clicked', { points: aiIds })
+    else log('generate_clicked', { points: aiIds, slots: slotIds, n_done_before: S.points.filter((p) => pointState(p) === 'done').length })
     stopWork()
     const token = workToken
     set({ moreOpen: false, genError: null, points: S.points.map((p) => aiIds.includes(p.id) ? { ...p, writing: true } : p) })
@@ -1478,21 +1586,120 @@ function createAssistant(replyBox) {
     return n
   }
 
+  // --- Study log (BACKEND_SPEC.md §7) ----------------------------------------
+  // Text goes in each event's third argument ("content"), which logEvent only
+  // keeps for consenting participants, after redacting it.
+  function logDone(el, event) {
+    const id = el.dataset.id
+    if (el.dataset.kind === 'outside') { log(event.replace('point', 'outside'), { item: id }); return }
+    const b = blocks.get(id)
+    log(event, { point: id, ai: !!(b && b.kind === 'ai'), via: 'marked', seconds_since_generated: secondsSince(b) }, { text: sectionText(id) })
+  }
+
+  // A typed value is logged once the person pauses (VALUE_PAUSE_MS), not on
+  // every key; a picked option at once. Only when it changed since last time.
+  const VALUE_PAUSE_MS = 2000
+  const loggedValues = {}
+  const valueTimers = {}
+  function logValue(key, source) {
+    clearTimeout(valueTimers[key])
+    delete valueTimers[key]
+    const value = (S.values[key] || '').trim()
+    if (value === (loggedValues[key] || '')) return
+    loggedValues[key] = value
+    log('value_entered', { key, source, empty: !value }, { value })
+  }
+  const logValueSoon = (key) => {
+    clearTimeout(valueTimers[key])
+    valueTimers[key] = setTimeout(() => logValue(key, 'typed'), VALUE_PAUSE_MS)
+  }
+
+  // "Concluir" compares the plan with how it was when "Editar" was clicked.
+  function logPlanEdits(before, after) {
+    const old = new Map(before.map((p) => [p.id, p]))
+    const now = new Set(after.map((p) => p.id))
+    let added = 0
+    let deleted = 0
+    let renamed = 0
+    for (const p of after) {
+      const q = old.get(p.id)
+      if (!q) { added++; log('point_added', { point: p.id }, { title: p.title, desc: p.desc }); continue }
+      let changed = false
+      for (const field of ['title', 'desc']) {
+        if ((q[field] || '') === (p[field] || '')) continue
+        changed = true
+        log('point_edited', { point: p.id, field }, { before: q[field] || '', after: p[field] || '' })
+      }
+      if (changed) renamed++
+    }
+    for (const q of before) if (!now.has(q.id)) { deleted++; log('point_deleted', { point: q.id }, { title: q.title, desc: q.desc }) }
+    if (added || deleted || renamed) log('list_edited', { added, deleted, renamed })
+  }
+
+  // The person's reply as it is sent: their text and Gmail's signature, but
+  // not the quoted earlier messages (the backend already has those, redacted).
+  function replyText() {
+    const lines = []
+    for (const child of replyBox.children) {
+      if (child.matches('.gmail_quote')) break
+      const quote = child.querySelector('.gmail_quote')
+      if (!quote) { lines.push(child.innerText); continue }
+      const copy = child.cloneNode(true)
+      copy.querySelectorAll('.gmail_quote').forEach((q) => q.remove())
+      lines.push(copy.textContent)
+      break
+    }
+    return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+  }
+
+  // Clicking Enviar (or Ctrl/⌘+Enter in the reply). Logged once per reply,
+  // with how much the person changed each of the assistant's paragraphs.
+  // Detecting the click never delays or blocks sending.
+  let replyLogged = false
+  function logReplySent(how) {
+    if (replyLogged) return
+    replyLogged = true
+    for (const key of Object.keys(valueTimers)) logValue(key, 'typed')
+    const distance = {}
+    const aiText = {}
+    const finalText = {}
+    for (const [id, b] of blocks) {
+      const now = b.el.isConnected ? norm(b.el.textContent) : ''
+      finalText[id] = now
+      if (b.kind !== 'ai') continue
+      aiText[id] = norm(b.rendered)
+      distance[id] = editDistance(aiText[id], now)
+    }
+    log('reply_sent', { how, had_list: S.hadList, edit_distance_per_point: distance, placeholders_left: pendingInEmail() },
+      { ai_text: aiText, final_text: finalText, final_reply: replyText() })
+    flushLog()
+  }
+
   const actions = {
     // Explicit click (or the opt-in "Preparar sempre"): the only point where
     // the thread is read and sent.
-    askList: () => runWork(STEPS_LIST, requestList(replyBox), (result) => {
-      sent = result.sent
-      requester = result.requester
-      return { view: 'list', hadList: true, ...normalizeList(result.list), values: {}, stepsOpen: false, genError: null, openIds: [], moreOpen: false }
-    }, 'askList'),
-    decline: () => leaveThen({ view: 'declined' }),
-    reopen: () => set({ view: S.hadList ? 'list' : 'ready' }),
-    hide: () => { stopWork(); leaveThen({ view: 'declined', points: stopWriting(), moreOpen: false }) },
+    askList: () => {
+      log('list_requested')
+      loadStudyConfig().then(render)
+      runWork(STEPS_LIST, requestList(replyBox), (result) => {
+        sent = result.sent
+        requester = result.requester
+        const list = normalizeList(result.list)
+        log('list_shown', { n_points: list.points.length, n_needs: new Set(list.points.flatMap((p) => p.needs.map((n) => n.key))).size })
+        return { view: 'list', hadList: true, ...list, values: {}, stepsOpen: false, genError: null, openIds: [], moreOpen: false }
+      }, 'askList')
+    },
+    decline: () => { log('assistant_declined'); leaveThen({ view: 'declined' }) },
+    reopen: () => {
+      log('assistant_reopened')
+      loadStudyConfig().then(render)
+      set({ view: S.hadList ? 'list' : 'ready' })
+    },
+    hide: () => { log('panel_hidden'); stopWork(); leaveThen({ view: 'declined', points: stopWriting(), moreOpen: false }) },
     cancel: () => { stopWork(); set({ view: S.hadList ? 'list' : 'ready', error: null }) },
     retry: () => S.retry && actions[S.retry](),
-    openHelp: () => showGuide(),
-    toggleSteps: () => set({ stepsOpen: !S.stepsOpen }),
+    openHelp: () => { log('guide_opened'); showGuide() },
+    toggleSteps: () => { if (!S.stepsOpen) log('steps_expanded'); set({ stepsOpen: !S.stepsOpen }) },
     toggleRow: (el) => {
       const id = el.dataset.id
       if (S.openIds.includes(id)) {
@@ -1504,7 +1711,12 @@ function createAssistant(replyBox) {
       scrollToSection(id)
     },
     toggleMore: () => S.moreOpen ? closeMenuThen(() => set({ moreOpen: false })) : set({ moreOpen: true }),
-    setOwner: (el) => { keepInPlace = el.dataset.id; updateItem(el, { owner: el.dataset.owner }) },
+    setOwner: (el) => {
+      const p = S.points.find((x) => x.id === el.dataset.id)
+      if (p && p.owner !== el.dataset.owner) log('owner_changed', { point: p.id, to: el.dataset.owner, suggested: p.suggested })
+      keepInPlace = el.dataset.id
+      updateItem(el, { owner: el.dataset.owner })
+    },
     // An option found in the sources fills the field (and the email); it can
     // still be edited. Clicking the chosen one again clears it.
     // A suggestion fills the field (and the email) and the list closes,
@@ -1512,22 +1724,24 @@ function createAssistant(replyBox) {
     pickOption: (el) => {
       set({ values: { ...S.values, [el.dataset.key]: el.dataset.value } })
       refillParagraphs()
+      logValue(el.dataset.key, 'option')
     },
     focusNeed: (el) => { const field = root.getElementById(`need-${el.dataset.key}`); if (field) field.focus() },
     showInEmail: (el) => { scrollToSection(el.dataset.id); setHover(el.dataset.id) },
-    markDone: (el) => { keepInPlace = el.dataset.id; updateItem(el, { done: true }) },
-    undoDone: (el) => { keepInPlace = el.dataset.id; updateItem(el, { done: false }) },
+    markDone: (el) => { logDone(el, 'point_done'); keepInPlace = el.dataset.id; updateItem(el, { done: true }) },
+    undoDone: (el) => { logDone(el, 'point_undone'); keepInPlace = el.dataset.id; updateItem(el, { done: false }) },
     generate: () => writeReply(false),
     regenerate: () => writeReply(true),
     retryGenerate: () => writeReply(S.retryAgain),
     cancelWriting: () => { stopWork(); set({ points: stopWriting() }) },
     removeAI: () => {
+      log('ai_text_removed', { points: S.points.filter((p) => p.ai).map((p) => p.id) })
       removeAssistantText()
       set({ moreOpen: false, points: S.points.map((p) => p.ai ? { ...p, ai: false } : p) })
       syncWithEmail()
     },
     startEdit: () => set({ editing: true, snapshot: S.points, newText: '', newDesc: '', moreOpen: false }),
-    finishEdit: () => set({ editing: false, newText: '', newDesc: '' }),
+    finishEdit: () => { logPlanEdits(S.snapshot || [], S.points); set({ editing: false, newText: '', newDesc: '' }) },
     // Restores the plan's text. A deleted step's section can't come back to
     // the email, so a restored step without one is "not written" again.
     cancelEdit: () => set({
@@ -1563,6 +1777,7 @@ function createAssistant(replyBox) {
     if (t.dataset.key) {
       set({ values: { ...S.values, [t.dataset.key]: t.value } })
       refillParagraphs()
+      logValueSoon(t.dataset.key)
     }
     else if (t.dataset.editField) {
       set({ points: S.points.map((p) => p.id === t.dataset.id ? { ...p, [t.dataset.editField]: t.value } : p) })
@@ -1575,7 +1790,7 @@ function createAssistant(replyBox) {
     const desc = S.newDesc.trim()
     const title = S.newText.trim() || desc.split(/\s+/).slice(0, 4).join(' ').replace(/[.,;:]+$/, '')
     if (!title) return
-    set({ newText: '', newDesc: '', points: S.points.concat([{ id: 'n' + Date.now(), title, desc, needs: [], owner: 'user', sourceIds: [], done: false, ai: false, writing: false }]) })
+    set({ newText: '', newDesc: '', points: S.points.concat([{ id: 'n' + Date.now(), title, desc, needs: [], owner: 'user', suggested: null, sourceIds: [], done: false, ai: false, writing: false }]) })
   })
 
   // Typing in the reply collapses the ready bar into "Mostrar assistente".
@@ -1618,6 +1833,16 @@ function createAssistant(replyBox) {
   document.addEventListener('focusin', onOver, true)
   document.addEventListener('focusout', hideTip, true)
 
+  // Sending, for the study log. Capture phase, so it runs before Gmail
+  // removes the reply; it never stops or delays the send.
+  const onSendClick = (e) => { if (sendButtonFrom(e.target)) logReplySent('click') }
+  const onSendKey = (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && sendButtonFrom(e.target)) logReplySent('button_key')
+    else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && replyBox.contains(e.target)) logReplySent('shortcut')
+  }
+  document.addEventListener('click', onSendClick, true)
+  document.addEventListener('keydown', onSendKey, true)
+
   // Follow the reply as the conversation scrolls or the window resizes.
   window.addEventListener('scroll', schedulePosition, true)
   window.addEventListener('resize', schedulePosition)
@@ -1638,6 +1863,9 @@ function createAssistant(replyBox) {
     document.removeEventListener('mouseout', onOut, true)
     document.removeEventListener('focusin', onOver, true)
     document.removeEventListener('focusout', hideTip, true)
+    document.removeEventListener('click', onSendClick, true)
+    document.removeEventListener('keydown', onSendKey, true)
+    flushLog()
     if (tip) tip.remove()
     marks.remove()
     host.remove()
@@ -1646,6 +1874,7 @@ function createAssistant(replyBox) {
   render()
   if (!prefs.guideSeen) showGuide()
   if (prefs.prepareAlways) actions.askList()
+  else log('bar_shown')
 }
 
 async function attachToReplyBox(replyBox) {

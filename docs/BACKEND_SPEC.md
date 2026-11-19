@@ -33,7 +33,7 @@ These come from the study design and are not negotiable.
    **Be conservative with what past answers say.** Past answers can be out of date. Never assert from them that something does **not** exist or apply (e.g. "the course doesn't exist"); make it a need or a point for the person. Deadlines, academic years and amounts taken from answers tagged `TEMPORAL_*`, `REG_AMOUNT` or `REG_EDITAL` become needs unless clearly current. Once sources carry dates, answers older than **24 months** count as unconfirmed.
 2. **Say what you used.** `/list` returns the names of the sources actually used (`sources`). Never list a source you did not use.
 3. **The AI does not act or decide.** It never certifies, graduates or confirms that a student completed something, and it never claims to have done anything in CLIP, SinGAP, Gesdoc or any other system. Points that involve such judgements are suggested as the **person's** (`"owner": "user"`), and actions in those systems go in `outside`.
-4. **Personal data.** The thread arrives already redacted (section 3). Do not try to recover redacted values. Do not store thread text beyond the request, and do not log it, unless a participant has explicitly consented to text logging (`/config`, section 6).
+4. **Personal data.** The thread arrives already redacted (section 3), and so does every text in `/log` (the extension redacts it the same way). Do not try to recover redacted values. Thread text and other content (the `/list` and `/generate` calls, and `/log`'s `content`) are stored **only** for participants with `text_logging_consent` (section 6), only in the study files (section 7.1), and never in server logs or anywhere else.
 5. **Keys stay server-side.** The model API key lives in the backend only. The model must be EU-hosted or one the university has agreed to.
 6. **Language and register.** pt-PT (not pt-BR: "você", "registo", "contacto", "equipa", "facto"), formal and courteous, as a university academic office writes.
 
@@ -99,7 +99,7 @@ Called when the person clicks **Preparar a lista** (or automatically when a repl
 |---|---|---|
 | `thread` | string | Redacted thread, section 3. Can be several thousand characters. |
 | `ticket` | string | SHA-256 (hex) of Gmail's thread ID. Stable per conversation, so use it to correlate requests. It is not reversible to the thread. |
-| `participant` | string, optional | Pseudonymous study ID. **Not sent yet**: the extension will add it in a later step. Accept its absence. |
+| `participant` | string, optional | Pseudonymous study ID (e.g. `p01`), set per installation in the extension's `config.local.json`. Development builds have none, so accept its absence (and store nothing for the study without it). |
 
 ### Response (200)
 
@@ -222,7 +222,7 @@ Called when the person clicks **Gerar os pontos do assistente (N)** or **Gerar o
 | `previous` | array or null | For **Gerar outra versão**: the paragraphs you returned last time for these points, in the response format below. Write a **different** wording, with the same facts and the same slots. `null` on a first generation. |
 | `instruction` | string or null | Reserved for a future "Não é isto?" correction. Currently always `null`. If present, follow it. |
 
-The values the person typed for the needs are **never sent**. You will not know them, so write around slots.
+The values the person typed for the needs are **never sent to `/generate`**. You will not know them, so write around slots. (For consenting participants they reach the study log, redacted, through `/log`: section 7.)
 
 ### Response (200)
 
@@ -273,61 +273,92 @@ GET /config?participant=p07
 |---|---|
 | `phase` | Study phase. Example design: phase 1 = list only, phase 2 = full assistant. Final design is set by the researcher. |
 | `generate_enabled` | If `false`, the extension hides all generation buttons (list-only phase). |
-| `text_logging_consent` | Whether this participant consented to text being logged. Default `false`. |
+| `text_logging_consent` | Whether this participant consented to text being stored. Default `false`. It controls both the storage of their `/list` and `/generate` calls (request and response) and whether their `/log` events keep `content`. The extension also leaves `content` out of events when it is `false`. |
 
-Keep the participant-to-phase mapping in a config file the researcher can edit without code changes. Unknown or missing participant: return phase 2 with `generate_enabled: true` and `text_logging_consent: false`.
+Keep the participant-to-phase mapping in a config file the researcher can edit without code changes (`study_config.json`). Unknown or missing participant: return phase 2 with `generate_enabled: true` and `text_logging_consent: false`.
+
+The extension asks when Gmail loads and again each time the panel opens. Until it answers, or if it fails, the extension uses those same defaults, so a failure never stores text.
 
 ---
 
 ## 7. `POST /log`
 
-The extension queues study events and sends them in batches. Store them append-only (JSONL file or a table) and return `204`.
+The extension queues study events and sends them in batches: every 15 s, right after a reply is sent, and when the Gmail tab is hidden or closed. Store them append-only and return `204`. If a batch fails, the extension keeps it and sends it again with the next one, so events can arrive late (use `ts`, not arrival time). The extension sends no events from a build without a participant ID.
 
 ```json
 {
   "events": [
     { "event": "list_requested", "participant": "p07", "ticket": "3f1c…", "phase": 2, "ts": "2026-10-14T15:02:11.204Z" },
-    { "event": "owner_changed", "participant": "p07", "ticket": "3f1c…", "phase": 2, "ts": "…", "point": "c4", "to": "user", "suggested": "ai" }
+    { "event": "owner_changed", "participant": "p07", "ticket": "3f1c…", "phase": 2, "ts": "…", "point": "c4", "to": "user", "suggested": "ai" },
+    { "event": "point_edited", "participant": "p07", "ticket": "3f1c…", "phase": 2, "ts": "…", "point": "c3", "field": "title",
+      "content": { "before": "Prazo", "after": "Prazo de candidatura" } }
   ]
 }
 ```
 
-Every event has `event`, `participant`, `ticket`, `phase`, `ts` (ISO 8601). Extra fields per event:
+Every event has `event`, `participant`, `ticket`, `phase` and `ts` (ISO 8601). `ticket` is the same hash sent to `/list`, so events, `/list` and `/generate` calls about one conversation can be joined.
 
-| Event | Extra fields |
-|---|---|
-| `bar_shown`, `list_requested`, `assistant_declined`, `panel_hidden`, `assistant_reopened`, `steps_expanded`, `guide_opened`, `regenerate_clicked` | none |
-| `list_shown` | `n_points`, `n_needs` |
-| `owner_changed` | `point`, `to` (`"ai"`/`"user"`), `suggested` |
-| `point_done`, `point_undone` | `point`, `ai` (bool: written by the assistant), `seconds_since_generated` |
-| `value_entered` | `key` (**never the value**) |
-| `generate_clicked` | `points` (ids), `n_done_before` |
-| `ai_text_removed` | `points` |
-| `list_edited` | `added`, `deleted`, `renamed` (counts) |
-| `pref_prepare_always` | `value` |
-| `reply_sent` | `edit_distance_per_point` (object id → number), `placeholders_left` |
+**Text goes only in `content`.** All text an event carries (titles, values, paragraphs, the final reply) is inside one top-level object, `content`. Every other field is metadata.
+- The extension adds `content` only when `/config` says `text_logging_consent: true`, and redacts it first, like the thread (section 3): patterns plus the senders' names.
+- The server must also drop `content` (and any legacy `text`, `thread`, `value` or `body` field) for participants without consent.
 
-Accept unknown event names and fields (store them as they are). Events contain **metadata only**: reject or strip any field named `text`, `thread`, `value` or `body` unless the participant has `text_logging_consent`.
+| Event | Extra fields | `content` (consent only) |
+|---|---|---|
+| `bar_shown`, `list_requested`, `assistant_declined`, `panel_hidden`, `assistant_reopened`, `steps_expanded`, `guide_opened` | none | |
+| `list_shown` | `n_points`, `n_needs` (distinct keys) | (the list itself is in the stored `/list` call) |
+| `owner_changed` | `point`, `to` (`"ai"`/`"user"`), `suggested` (the backend's owner; `null` for an added point) | |
+| `value_entered` | `key`, `source` (`"typed"`: logged when the person pauses ~2 s; `"option"`: a suggestion picked), `empty` (bool: the field was cleared) | `{ value }` |
+| `point_done`, `point_undone` | `point`, `ai` (bool: the assistant wrote its section), `via` (`"marked"`: Marcar como feito/Desfazer; `"slot"`: the person typed in, or emptied, their slot; `"deleted"`: its section was deleted from the email, undone only), `seconds_since_generated` (since its section was placed; `null` if none) | `{ text }`: the section as it stood (for `"slot"`, at the first keystroke: the final text is in `reply_sent`) |
+| `outside_done`, `outside_undone` | `item` (an `outside` id) | |
+| `generate_clicked` | `points` (ids sent to `/generate`), `slots` (ids of the person's points given a slot), `n_done_before` | (stored with the `/generate` call) |
+| `regenerate_clicked` | `points` | (stored with the `/generate` call) |
+| `ai_text_removed` | `points` | |
+| `point_edited` | `point`, `field` (`"title"`/`"desc"`), one event per changed field when "Concluir" is clicked | `{ before, after }` |
+| `point_added` | `point` (id like `n1718…`) | `{ title, desc }` |
+| `point_deleted` | `point` | `{ title, desc }` |
+| `list_edited` | `added`, `deleted`, `renamed` (counts, at "Concluir"; only if something changed) | |
+| `pref_prepare_always` | `value` (bool; `ticket` is `null`) | |
+| `reply_sent` | `how` (`"click"`, `"button_key"`, `"shortcut"`: Ctrl/⌘+Enter), `had_list`, `edit_distance_per_point` (assistant's point id → characters changed, Levenshtein, from its text with the person's values filled in to the final text), `placeholders_left` | `{ ai_text: {id: text}, final_text: {id: text}, final_reply }`. `final_text` includes the person's slots. `final_reply` is the reply as sent, with Gmail's signature but **without the quoted earlier messages**. |
+
+`reply_sent` is detected when Enviar is clicked (or the shortcut pressed), before Gmail sends; a send Gmail then refuses (e.g. no recipient) is still logged. Accept unknown event names and fields, and store them as they are.
+
+### 7.1 Stored data
+
+| File | Who | What |
+|---|---|---|
+| `events.jsonl` | every participant | `/log` events, append-only. `content` only for participants with consent. |
+| `interactions.jsonl` | consenting participants only | every `/list` and `/generate` call that carries `participant`: the full request (redacted thread, ticket, and for `/generate` the points as edited, `context_points`, `previous`), the full response, the model and the duration. |
+
+Nothing is stored for requests without a participant ID (development builds) or for unknown participants beyond their metadata events. Server logs keep one timing line per request and no email content.
 
 ---
 
 ## 8. Errors, timing and transport
 
-- **Calls come from the extension's service worker**, not from the Gmail page. The extension will declare the backend URL in its `host_permissions`, so CORS is not enforced. Allowing it does no harm.
-- **Errors:** any non-2xx response makes the extension show "Não foi possível contactar o assistente." with a retry button. Return a JSON body `{ "error": "…" }` with a useful message for the logs. Use `400` for malformed requests (e.g. a `/generate` point id with a slot key not in its needs), `500` for failures.
-- **Timing:** the extension animates progress steps while it waits and gives up after **150 s**, so the server's own timeout (currently 120 s) fires first and returns a proper error. Current latency with the shared Gemma endpoint is 30–95 s per call. `/list` blocks the first view of the panel, so it benefits most from being faster (e.g. retrieval plus a single model call).
+- **Base URL:**
+  - **Production:** `https://113-30-149-134.sslip.io`, hosted on a small EU VPS. It uses HTTPS with a Let's Encrypt certificate; sslip.io maps the name to the server's IP, 113.30.149.134.
+  - **Development:** `http://localhost:4000`.
+  - The extension takes the URL from its build config (`config.local.json` → `build/config.js`; without that file it uses localhost). Both origins are in its `host_permissions`.
+- **Auth:** every request to `/list`, `/generate`, `/config` and `/log` sends the header `X-API-Key: <key>`.
+  - A missing or wrong key gets `401 {"error": "missing or invalid X-API-Key"}`. The extension treats it like any other error and logs "Invalid API key" or "Missing API key" in its service worker console.
+  - `GET /health` is open: it answers `{"status": "ok"}` without a key, and adds the model details when a valid key is sent.
+  - Each installation (one per PC) has its own key, so one can be revoked alone. Keys live only in the extension's gitignored `config.local.json` and on the server, and never in either repo.
+- **Calls come from the extension's service worker**, not from the Gmail page. The backend's origin is in the extension's `host_permissions`, so CORS is not enforced. The server allows it anyway, including the `X-API-Key` header.
+- **Errors:** any non-2xx response makes the extension show "Não foi possível contactar o assistente." with a retry button. Return a JSON body `{ "error": "…" }` with a useful message for the logs. Use `400` for malformed requests (e.g. a `/generate` point id with a slot key not in its needs), `401` for a missing or invalid key, and `500` for failures.
+- **Timing:** the server gives up after **120 s** (`REQUEST_BUDGET_S`). The extension animates progress steps while it waits and gives up after **150 s**, so the server's timeout fires first and returns a proper error. Current latency with Amalia (backend v0.13): an in-scope `/list` takes ~15–25 s, `/generate` ~5 s. `/list` blocks the first view of the panel, so it benefits most from being faster.
 - **Validate your own output** before returning it: required fields present, need keys match `^[a-z0-9_]+$`, every slot is a need of its point, no paragraph for an unrequested point, no redaction labels in `text`. If the model's output fails, retry once, then return `500`.
-- **Base URL:** `http://localhost:4000` during development. In production it will be university-hosted over HTTPS, and the URL is a constant in the extension.
 
 ---
 
 ## 9. How to test against the extension
 
-1. Run the backend on `http://localhost:4000`.
-2. In the extension repo, `public/ServiceWorker.js`: set `MOCK_BACKEND = false`. Add `"host_permissions": ["http://localhost:4000/*"]` to `public/manifest.json`. Run `npm run build` and reload the extension in `chrome://extensions`.
+1. Run the backend on `http://localhost:4000` (with `API_KEYS` set to test the auth), or use the production server.
+2. In the extension repo, copy `config.example.json` to `config.local.json`, set `backendUrl`, this PC's `apiKey` and its `participantId` (`p01`, `p02`… for participants; a name not in `study_config.json`, e.g. `dev`, for testing, so nothing lands in the study data), and check that `MOCK_BACKEND = false` in `public/ServiceWorker.js`. Run `npm run build` (it prints which URL it built for, and whether a key is included) and reload the extension in `chrome://extensions`. Without `config.local.json`, the build calls `http://localhost:4000` with no key.
 3. Open a thread in Gmail, start a reply, click **Preparar a lista**. To see exactly what the backend received, open `chrome://extensions` → the extension's **service worker** console.
 
 Quick checks with curl:
+
+Add `-H 'X-API-Key: <key>'` to each call when the server has keys set.
 
 ```bash
 curl -s localhost:4000/list -H 'Content-Type: application/json' -d '{
@@ -351,8 +382,9 @@ curl -s localhost:4000/generate -H 'Content-Type: application/json' -d '{
 - [ ] `/generate` returns one paragraph per requested point, in order, plain text, slots only from that point's needs, no greeting or sign-off, no redaction labels.
 - [ ] `/generate` with `previous` returns different wording with the same slots.
 - [ ] Edited and added points are written as edited. `context_points` are not written.
-- [ ] Thread text is not written to logs or disk. `/log` stores metadata only.
+- [ ] Thread text and `content` are stored only for participants with `text_logging_consent`, only in `events.jsonl`/`interactions.jsonl`, never in server logs. For other participants `/log` stores metadata only.
 - [ ] The model API key is only on the server.
+- [ ] `/list`, `/generate`, `/config` and `/log` answer `401` without a valid `X-API-Key`; `/health` answers without one.
 
 ---
 
@@ -360,3 +392,5 @@ curl -s localhost:4000/generate -H 'Content-Type: application/json' -d '{
 
 - **2026-10-16, after the heuristic evaluation** (agreed by Pedro and both sessions; plan in `docs/REDESIGN_PLAN.md`): `/list` returns 1–4 points with short titles and descriptions; at most ~4 needs per list, with labels phrased as what to fill in; conservative use of past answers (rule 1); new additive fields `points[].source_ids` and `source_details`. Nothing existing was removed or renamed.
 - **2026-10-19, "Falta saber" round 2** (agreed by Pedro and both sessions; `docs/REDESIGN_PLAN.md`, Round 2): `needs[]` gains `question`, `type`, `hint` (server-side from `type`) and `options` (verbatim-grounded, with `time_sensitive`); `label` becomes ≤4 words and is used for the brackets in the email. Additive: nothing removed or renamed.
+- **2026-11-19, public server and access keys** (approved by Pedro; backend v0.13): production base URL `https://113-30-149-134.sslip.io` on an EU VPS, with `http://localhost:4000` kept for development. `/list`, `/generate`, `/config` and `/log` require `X-API-Key` and answer `401` without a valid one; `/health` stays open. One key per installation, kept out of both repos. Server timeout 120 s, client 150 s. Section 9 now describes the extension's `config.local.json`.
+- **2026-11-19, study content logging** (approved by Pedro, who confirmed the consent form and ethics approval cover storing email text; backend v0.14): for participants with `text_logging_consent`, the backend stores every `/list` and `/generate` call (`interactions.jsonl`) and `/log` keeps text, always inside one `content` object, redacted by the extension like the thread. The final reply is logged without the quoted earlier messages. The extension now sends `participant` (set per installation), reads `/config` (consent, hiding generation) and sends `/log` in batches. New events: `point_edited`, `point_added`, `point_deleted`, `outside_done`/`outside_undone`; new fields on `value_entered`, `point_done`/`point_undone`, `generate_clicked` and `reply_sent`. Section 7.1 lists the stored files. Typed values now reach the study log (never `/generate`).

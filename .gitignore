@@ -22,3 +22,9 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 /documents
+
+# backend access key: each PC has its own (see config.example.json)
+/config.local.json
+/build/config.js
+/build-pc1/
+/build-pc2/

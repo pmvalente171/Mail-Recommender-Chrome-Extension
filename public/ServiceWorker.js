@@ -2,12 +2,14 @@
 // (docs/handoff/HANDOFF.md, section 4). The content script sends it text that
 // has already had personal data removed in the page.
 
-// Keep in sync with "host_permissions" in manifest.json, which lets this
-// service worker call the backend without CORS.
-const BACKEND_URL = 'http://localhost:4000'
+// The backend's address, this PC's access key and its study participant ID
+// (docs/BACKEND_SPEC.md, sections 6–8) come from config.js, which the build
+// writes from config.local.json. The origin must be in "host_permissions" in
+// manifest.json, which lets this service worker call the backend without CORS.
+import { BACKEND_URL, API_KEY, PARTICIPANT } from './config.js'
 
-// The backend can take over a minute (docs/BACKEND_SPEC.md, section 8). Give up
-// after this, so its own timeout normally fires first with a proper error.
+// The backend gives up after 120 s (docs/BACKEND_SPEC.md, section 8). Wait a bit
+// longer, so its own timeout normally fires first with a proper error.
 const REQUEST_TIMEOUT_MS = 150000
 // Chrome stops an idle extension service worker after 30 s. Calling an
 // extension API resets that timer, so ping one while a request is pending.
@@ -21,20 +23,31 @@ const KEEPALIVE_MS = 20000
 const MOCK_BACKEND = false
 const MOCK_DELAY_MS = 2500
 
+// Study events that could not be sent wait in chrome.storage.local (this
+// worker can be stopped at any time) and go out with the next batch.
+const LOG_BACKLOG_KEY = 'dalmLogBacklog'
+const LOG_BACKLOG_MAX = 5000
+
 chrome.runtime.onInstalled.addListener(() => {
   console.log('Mail Recommender installed.')
 })
 
-// Message type → backend endpoint, and the mock that stands in for it.
+// The participant goes with every call, so the backend can apply the study's
+// settings and consent (BACKEND_SPEC.md §6). Without one, nothing is stored.
+const withParticipant = (payload) => PARTICIPANT ? { ...payload, participant: PARTICIPANT } : payload
+
+// Message type → backend call, and the mock that stands in for it.
 const ROUTES = {
-  'dalm:list': { path: '/list', mock: (payload) => mockList(payload) },
-  'dalm:generate': { path: '/generate', mock: (payload) => mockGenerate(payload) }
+  'dalm:list': { path: '/list', call: (p) => request('POST', '/list', withParticipant(p)), mock: (p) => mockList(p) },
+  'dalm:generate': { path: '/generate', call: (p) => request('POST', '/generate', withParticipant(p)), mock: (p) => mockGenerate(p) },
+  'dalm:config': { path: '/config', call: () => request('GET', `/config?participant=${encodeURIComponent(PARTICIPANT)}`), mock: () => mockConfig() },
+  'dalm:log': { path: '/log', call: (p) => sendLog(p.events), mock: (p) => mockLog(p.events) }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const route = ROUTES[message.type]
   if (!route) return false
-  callBackend(route, message.payload)
+  callBackend(route, message.payload || {})
     .then((data) => sendResponse({ ok: true, data }))
     .catch((err) => {
       console.warn(`[${route.path}] failed:`, err.message || err)
@@ -45,26 +58,55 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 async function callBackend(route, payload) {
   if (MOCK_BACKEND) return route.mock(payload)
-  console.log(`[${route.path}] request`, payload)
-  const data = await postJSON(route.path, payload)
+  console.log(`[${route.path}] request to ${BACKEND_URL}`, payload)
+  const data = await route.call(payload)
   console.log(`[${route.path}] response`, data)
   return data
 }
 
+// Sends study events with the ones left over from earlier failures, oldest
+// first. On failure they all wait for the next batch. Without a participant ID
+// the backend would store nothing, so nothing is sent. One batch at a time, so
+// a backlog is never sent twice.
+let logChain = Promise.resolve()
+function sendLog(events) {
+  const run = logChain.then(async () => {
+    if (!PARTICIPANT) return { skipped: 'no participant ID in config.local.json' }
+    const stored = await chrome.storage.local.get({ [LOG_BACKLOG_KEY]: [] })
+    const batch = stored[LOG_BACKLOG_KEY].concat((events || []).map((e) => ({ ...e, participant: PARTICIPANT })))
+    if (!batch.length) return { sent: 0 }
+    try {
+      await request('POST', '/log', { events: batch })
+      await chrome.storage.local.set({ [LOG_BACKLOG_KEY]: [] })
+      return { sent: batch.length }
+    } catch (err) {
+      await chrome.storage.local.set({ [LOG_BACKLOG_KEY]: batch.slice(-LOG_BACKLOG_MAX) })
+      throw new Error(`${err.message || err} (${batch.length} events kept for the next batch)`)
+    }
+  })
+  logChain = run.catch(() => {})
+  return run
+}
+
 // Errors carry the backend's own message ({ "error": "…" }) for the logs; the
-// page shows a generic one either way.
-async function postJSON(path, payload) {
+// page shows a generic one either way. A 204 (from /log) returns null.
+async function request(method, path, payload) {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS)
   const keepAlive = setInterval(() => chrome.runtime.getPlatformInfo(() => {}), KEEPALIVE_MS)
   try {
     const res = await fetch(`${BACKEND_URL}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
+      method,
+      headers: { ...(payload ? { 'Content-Type': 'application/json' } : {}), ...(API_KEY ? { 'X-API-Key': API_KEY } : {}) },
+      body: payload ? JSON.stringify(payload) : undefined,
       signal: controller.signal
     })
     const body = await res.json().catch(() => null)
+    if (res.status === 401) {
+      throw new Error(API_KEY
+        ? 'Invalid API key (401): check apiKey in config.local.json, then rebuild'
+        : 'Missing API key (401): add apiKey to config.local.json, then rebuild')
+    }
     if (!res.ok) throw new Error((body && body.error) || `Backend returned ${res.status}`)
     return body
   } catch (err) {
@@ -74,6 +116,17 @@ async function postJSON(path, payload) {
     clearTimeout(timeout)
     clearInterval(keepAlive)
   }
+}
+
+// Shaped like GET /config (BACKEND_SPEC.md §6). Consent is on, so the mock
+// shows the events with their "content" in this console.
+async function mockConfig() {
+  return { phase: 2, generate_enabled: true, text_logging_consent: true }
+}
+
+async function mockLog(events) {
+  for (const e of events || []) console.log('[mock /log]', e.event, e)
+  return null
 }
 
 // Shaped like the POST /list response in HANDOFF.md section 4. The content is
