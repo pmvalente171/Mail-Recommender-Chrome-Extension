@@ -1,89 +1,1899 @@
+// Content script: adds the "Assistente DALM" to Gmail's inline reply box.
+// The spec and the clickable prototype are in docs/handoff/. Everything the
+// assistant draws lives in a shadow root *outside* the reply's editable body,
+// so nothing it renders can become part of the email.
 
+// --- Gmail thread and reply box ---------------------------------------------
+// Gmail class names (.a3s message body, .gD sender, .g3 date, h2.hP subject)
+// are obfuscated but have been stable for years. If Gmail changes them, these
+// are the selectors to update.
 
-// const MESSAGES_ENDPOINT = "https://ifetch.novasearch.org/agent/"
-const MESSAGES_ENDPOINT = "http://localhost:4000"
-
-// Uncomment 'document' field to access the full html
-//  document of th store.
-const SendMessage = async (
-    utterance, userId, sessionId,
-    userAction, selectedId, 
-    respondeCallback, /*document, */isUpToDate=false) => {
-  
-    const response = await fetch(MESSAGES_ENDPOINT, {
-      method: "POST",
-      body: JSON.stringify({
-        utterance : utterance, // The users utterance
-        user_id : userId, // The users ID 
-        session_id : sessionId, // The current session ID
-        user_action : userAction, // The users action
-        interface_selected_product_id: selectedId, // the ID of the opened product
-        image : null
-        // document: document // The HTML of the page
-      }),
-      headers: {
-        "Content-type": "application/json"
-      },
-      }).then((response) => response.json())
-      .then((data) => {
-        console.log(data)
-        respondeCallback(data, utterance, isUpToDate)
-      })
-      .catch((err) => {
-        console.log(err.message)
-      })
-
-    return response
-  }
-
-
-const messagesFromReactAppListener = (message, sender, response) => {
-    console.log('[content.js]. Message received', {
-        message,
-        sender,
-    })
-
-    if (message.message === 'Hello from React') {
-        const text = 'FARFETCH ID: ';
-        const elements = Array.from(document.querySelectorAll('p'));
-        const match = elements.find(el => {
-            return el.textContent.toLowerCase().includes(text.toLowerCase());
-        });
-        const productID = match.innerText.slice(13) // The id of the opened item
-
-        // Get the id from the DOM 
-        //  and select it in the backend
-        SendMessage("", message.uID, message.sID, 
-            "select", productID, (data, utterance, isUpToDate) => {
-            }, false)
-        
-    }
+// The open conversation that contains this reply box, or null if the box is
+// not an inline reply in a thread (e.g. a new message from "Compor").
+function findThreadView(replyBox) {
+  const main = replyBox.closest('[role="main"]')
+  if (!main) return null
+  const hasMessages = [...main.querySelectorAll('.a3s')].some((body) => !replyBox.contains(body))
+  return hasMessages ? main : null
 }
 
-// Fired when a message is sent from either an extension process or a content script.
-chrome.runtime.onMessage.addListener(messagesFromReactAppListener)
+function getThreadId(threadView) {
+  const subject = threadView.querySelector('h2[data-thread-perm-id], h2[data-legacy-thread-id]')
+  if (subject) return subject.dataset.threadPermId || subject.dataset.legacyThreadId
+  // Fallback: the last segment of the URL, e.g. #label/DALM+Examples/KtbxLz…
+  return location.hash.split('/').pop() || ''
+}
 
-// Edit the DOM of the page in a way that lets you add the chat 
-//  into the window. 
-const cssContent = `
-  position: fixed;
-  bottom: 23px;
-  right: 28px;
-  width: 404px;
-  height: 520px;
-  z-index: 10;
-  background: white;
+// Reads the text of the open thread. Only call this after an explicit click:
+// nothing in the email is read until the person asks for it.
+// Only expanded messages are read; Gmail does not render the bodies of
+// collapsed messages, so earlier messages hidden behind a count are skipped.
+function readThread(replyBox) {
+  const threadView = findThreadView(replyBox)
+  if (!threadView) return null
+
+  const subjectEl = threadView.querySelector('h2.hP')
+  const messages = [...threadView.querySelectorAll('.a3s')]
+    .filter((body) => !replyBox.contains(body))
+    .map((body) => {
+      const container = body.closest('.adn') || body.parentElement
+      const sender = container.querySelector('.gD')
+      const date = container.querySelector('.g3')
+      return {
+        from: sender ? sender.getAttribute('name') || sender.textContent.trim() : '',
+        email: sender ? sender.getAttribute('email') || '' : '',
+        date: date ? date.getAttribute('title') || date.textContent.trim() : '',
+        // innerText keeps line breaks and skips Gmail's hidden "..." trimmed
+        // quote, which only repeats earlier messages.
+        text: body.innerText.trim()
+      }
+    })
+    .filter((message) => message.text)
+
+  const text = messages
+    .map((m) => `De: ${m.from}${m.email ? ` <${m.email}>` : ''}\nData: ${m.date}\n\n${m.text}`)
+    .join('\n\n---\n\n')
+
+  return {
+    threadId: getThreadId(threadView),
+    subject: subjectEl ? subjectEl.textContent.trim() : '',
+    messages,
+    text
+  }
+}
+
+// --- Personal data ----------------------------------------------------------
+// Removed in the browser before anything leaves it (HANDOFF.md rule 7). The
+// patterns are deliberately broad: a false positive costs the model a little
+// context, a miss sends personal data. Order matters (IBAN and NIB before the
+// shorter number patterns).
+// Known limitation: names are only caught when they match a sender's name as
+// Gmail shows it (full name, or any part of it). Other people mentioned in the
+// text, or signatures that spell a name differently, are not removed.
+const REDACTIONS = [
+  ['[email]', /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g],
+  ['[IBAN]', /\b[A-Z]{2}\d{2}(?: ?[A-Z0-9]{4}){3,7}(?: ?[A-Z0-9]{1,4})?\b/g],
+  ['[NIB]', /\b\d{4}[ .]?\d{4}[ .]?\d{11}[ .]?\d{2}\b/g],
+  ['[telefone]', /(?:\+|00) ?351[ .-]?\d{3}[ .-]?\d{3}[ .-]?\d{3}\b|\b[29]\d{2}[ .-]?\d{3}[ .-]?\d{3}\b/g],
+  ['[NIF]', /\b\d{9}\b/g],
+  ['[n.º de aluno]', /\b\d{5,6}\b/g]
+]
+
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+function redact(text, names) {
+  let out = text
+  for (const [label, pattern] of REDACTIONS) out = out.replace(pattern, label)
+  // Full names first, then their parts (3+ letters), longest first.
+  const parts = names.flatMap((n) => [n, ...n.split(/\s+/)])
+    .filter((n) => n.length >= 3)
+    .sort((a, b) => b.length - a.length)
+  for (const name of new Set(parts)) {
+    out = out.replace(new RegExp(`(?<!\\p{L})${escapeRegExp(name)}(?!\\p{L})`, 'gu'), '[nome]')
+  }
+  return out
+}
+
+async function sha256(text) {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text))
+  return [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+// --- Backend (through the service worker) -----------------------------------
+// When the extension is reloaded or updated, the copy of this script already
+// running in an open Gmail tab is cut off from it: chrome.runtime goes away
+// and any extension call throws. Check before calling, and stop quietly.
+function extensionAlive() {
+  try { return !!(chrome.runtime && chrome.runtime.id) } catch (e) { return false }
+}
+
+async function callBackend(type, payload) {
+  if (!extensionAlive()) throw new Error('Extension reloaded')
+  const response = await chrome.runtime.sendMessage({ type, payload })
+  if (!response || !response.ok) throw new Error(response ? response.error : 'No response')
+  return response.data
+}
+
+// Returns the list plus what /generate needs later: the redacted thread and
+// ticket that were sent, and the requester's name for the greeting, which
+// stays in the browser.
+async function requestList(replyBox) {
+  if (!extensionAlive()) throw new Error('Extension reloaded')
+  const thread = readThread(replyBox)
+  if (!thread || !thread.text) throw new Error('No thread text')
+  const names = thread.messages.map((m) => m.from).filter(Boolean)
+  const sent = { thread: redact(thread.text, names), ticket: await sha256(thread.threadId) }
+  const list = await callBackend('dalm:list', sent)
+  return { list, sent, requester: names[0] || '' }
+}
+
+async function requestGenerate(payload) {
+  const data = await callBackend('dalm:generate', payload)
+  return (data && data.paragraphs) || []
+}
+
+// Fixed text around the assistant's paragraphs, added locally when the reply
+// is empty (HANDOFF.md section 4: greeting, thanks and sign-off come from a
+// template, not the model).
+const TEMPLATE = {
+  greeting: (name) => name ? `Caro(a) ${name},` : 'Caro(a) Senhor(a),',
+  thanks: 'Obrigado pelo seu contacto.',
+  signoff: ['Com os melhores cumprimentos,', 'Divisão Académica'],
+  // The line left in the email for a point the person writes themselves.
+  slot: (point) => `[Escreva aqui: ${(point.desc || point.title).replace(/\.\s*$/, '')}]`
+}
+// Gmail's own signature and quoted text: the assistant's text goes above them.
+const GMAIL_TAIL = '.gmail_signature, .gmail_signature_prefix, .gmail_quote, .gmail_extra'
+
+// A missing value (BACKEND_SPEC.md §4, REDESIGN_PLAN.md Round 2): the short
+// label goes in the email's brackets, the question heads its card, the type
+// picks the keyboard, and options are values found in the sources for the
+// person to pick. Older backends send only key and label.
+const NEED_TYPES = ['text', 'email', 'date', 'number', 'url']
+function normalizeNeed(n) {
+  return {
+    key: String(n.key),
+    label: n.label || n.key,
+    question: n.question || n.label || n.key,
+    type: NEED_TYPES.includes(n.type) ? n.type : 'text',
+    hint: n.hint || '',
+    options: (n.options || [])
+      .filter((o) => o && typeof o.value === 'string' && o.value.trim())
+      .slice(0, 3)
+      .map((o) => ({ value: o.value, sourceId: o.source_id ? String(o.source_id) : null, timeSensitive: !!o.time_sensitive }))
+  }
+}
+
+// Fills in defaults so the panel never has to guess at missing fields.
+function normalizeList(list) {
+  return {
+    request: list.request_summary || '',
+    // owner: who the backend suggests should handle the point; the person can
+    // switch it. Without a suggestion the point is the person's.
+    points: (list.points || []).map((p, i) => ({
+      id: String(p.id || `p${i}`), title: p.title || '', desc: p.desc || '',
+      needs: (p.needs || []).map(normalizeNeed), owner: p.owner === 'ai' ? 'ai' : 'user',
+      suggested: p.owner === 'ai' ? 'ai' : 'user', // kept for the study log
+      sourceIds: (p.source_ids || []).map(String),
+      done: false, ai: false, writing: false
+    })),
+    // The past answers behind the points: the matched question, a verbatim
+    // excerpt of the staff's reply, and its date when the index has one.
+    sourceDetails: (list.source_details || [])
+      .filter((s) => s && s.id && s.excerpt)
+      .map((s) => ({ id: String(s.id), question: s.question || '', excerpt: s.excerpt, date: s.date || null })),
+    outside: (list.outside || []).map((o, i) => ({ id: String(o.id || `o${i}`), text: o.text || '', done: false })),
+    steps: list.steps || [],
+    sources: list.sources || []
+  }
+}
+
+const STEPS_LIST = ['A ler o email', 'A perceber o pedido', 'A procurar a informação nas fontes a que tenho acesso']
+const STEP_DELAY_MS = 650
+
+// Short plain messages for failures (HANDOFF.md open issue 8).
+function errorMessage(err) {
+  if (err && err.message === 'No thread text') return 'Não consegui ler o email desta conversa.'
+  if (err && err.message === 'Extension reloaded') return 'A extensão foi atualizada. Recarregue o Gmail para continuar.'
+  if (!navigator.onLine) return 'Sem ligação à internet.'
+  return 'Não foi possível contactar o assistente.'
+}
+
+// --- Preferences ------------------------------------------------------------
+// The only settings the spec allows: the first-use guide and "Preparar sempre".
+const prefs = { guideSeen: true, prepareAlways: false }
+const prefsReady = chrome.storage.sync.get({ guideSeen: false, prepareAlways: false })
+  .then((stored) => Object.assign(prefs, stored))
+  .catch(() => {})
+
+function savePref(key, value) {
+  prefs[key] = value
+  if (extensionAlive()) chrome.storage.sync.set({ [key]: value }).catch(() => {})
+}
+
+// --- Study settings and logging (BACKEND_SPEC.md §6–7) ---------------------
+// GET /config says the participant's phase, whether generation is shown, and
+// whether they consented to text being stored. Until it answers, or if it
+// fails, the defaults apply: generation shown, no text stored.
+const study = { phase: 2, generate_enabled: true, text_logging_consent: false }
+let studyLoaded = false // after the first answer (or failure)
+let studyLoading = null
+function loadStudyConfig() {
+  if (studyLoading) return studyLoading
+  studyLoading = callBackend('dalm:config', {})
+    .then((c) => {
+      if (!c) return
+      study.phase = c.phase ?? study.phase
+      study.generate_enabled = c.generate_enabled !== false
+      study.text_logging_consent = c.text_logging_consent === true
+    })
+    .catch(() => {})
+    .finally(() => { studyLoading = null; studyLoaded = true })
+  return studyLoading
+}
+
+// Study events wait here and go to the service worker in batches: every
+// LOG_FLUSH_MS, when a reply is sent, and when the page is hidden or closed.
+// The service worker adds the participant ID and keeps whatever the backend
+// doesn't accept for the next batch.
+// Text goes only in an event's "content" object, only for participants who
+// consented, and always through `redact` first, like the thread (HANDOFF.md
+// rule 7). Without consent the same events go out without "content".
+const LOG_FLUSH_MS = 15000
+let logQueue = []
+
+function logEvent(event, fields, content, names) {
+  // The phase is stamped when the event is sent, once /config has answered.
+  const e = { event, ticket: null, phase: null, ts: new Date().toISOString(), ...fields }
+  if (content && study.text_logging_consent) e.content = redactContent(content, names || [])
+  logQueue.push(e)
+  return e
+}
+
+function redactContent(value, names) {
+  if (typeof value === 'string') return redact(value, names)
+  if (Array.isArray(value)) return value.map((v) => redactContent(v, names))
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, redactContent(v, names)]))
+  return value
+}
+
+function flushLog() {
+  if (!logQueue.length || !extensionAlive()) return
+  if (!studyLoaded) { loadStudyConfig().then(flushLog); return }
+  const events = logQueue
+  logQueue = []
+  for (const e of events) if (e.phase === null) e.phase = study.phase
+  // A failed send is kept by the service worker; only an unreachable one
+  // (e.g. while it restarts) puts the events back here.
+  chrome.runtime.sendMessage({ type: 'dalm:log', payload: { events } })
+    .catch(() => { if (extensionAlive()) logQueue = events.concat(logQueue) })
+}
+setInterval(flushLog, LOG_FLUSH_MS)
+window.addEventListener('pagehide', flushLog)
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') flushLog() })
+loadStudyConfig()
+
+// Characters to insert, delete or change to turn a into b (Levenshtein).
+function editDistance(a, b) {
+  a = a.slice(0, 4000)
+  b = b.slice(0, 4000)
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j)
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i]
+    for (let j = 1; j <= b.length; j++) row[j] = Math.min(prev[j] + 1, row[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+    prev = row
+  }
+  return prev[b.length]
+}
+
+// --- Styles -----------------------------------------------------------------
+// Built on the design kit in docs/DESIGN_KIT.md: IBM palette, white as the
+// only surface, Cool Gray for text and structure, cyan for the assistant and
+// teal for the person, plus one scale each for radii, spacing, type, control
+// heights and shadows. Use the tokens; do not add raw values.
+const UI_CSS = `
+:host{all:initial;
+  /* docs/DESIGN_KIT.md: IBM Design Language palette (Carbon @carbon/colors). */
+  /* 60: white, the only surface */
+  --surface:#ffffff;
+  /* 30: Cool Gray, text and structure */
+  --ink:#121619; --ink-2:#4d5358; --ink-3:#697077;
+  --field-line:#878d96; --line:#dde1e6; --hover:#f2f4f8;
+  /* 10: one accent per author. 50 for shapes, 60 for text and fills */
+  --ai:#1192e8; --ai-strong:#0072c3; --ai-tint:#e5f6ff;
+  --you:#009d9a; --you-strong:#007d79; --you-tint:#d9fbfb;
+  /* signals */
+  --warn:#8e6a00; --warn-line:#b28600; --warn-bg:#fcf4d6; --warn-ink:#684e00;
+  --danger:#da1e28; --danger-tint:#fff1f1; --focus:#0f62fe;
+  /* scales */
+  --r-xs:4px; --r-sm:8px; --r-md:12px; --r-lg:16px; --r-full:999px;
+  --s-1:4px; --s-2:8px; --s-3:12px; --s-4:16px; --s-5:24px;
+  --t-title:16px; --t-body:14px; --t-small:13px; --t-caption:12px; --t-micro:10px;
+  --h-sm:32px; --h-md:40px; --h-lg:44px;
+  --e-1:0 1px 3px rgba(18,22,25,.14);
+  --e-2:0 6px 16px rgba(18,22,25,.16);
+  --e-3:0 12px 32px rgba(18,22,25,.20);
+  --font-ui:'Public Sans DALM','Helvetica Neue',Arial,sans-serif;
+  --font-mail:Arial,Helvetica,sans-serif}
+*{box-sizing:border-box}
+.root{font-family:var(--font-ui);color:var(--ink);font-size:var(--t-body);line-height:1.4}
+button{font-family:inherit;cursor:pointer}
+:focus-visible{outline:2px solid var(--focus);outline-offset:2px}
+
+/* Buttons */
+.btn-primary{display:inline-flex;align-items:center;gap:var(--s-2);min-height:var(--h-lg);padding:0 20px;border:0;border-radius:var(--r-full);background:var(--ai-strong);color:#fff;font-size:var(--t-body);font-weight:600}
+.btn-secondary{min-height:var(--h-md);padding:0 var(--s-4);border:1px solid var(--field-line);border-radius:var(--r-full);background:var(--surface);color:var(--ai-strong);font-size:var(--t-small);font-weight:600}
+.btn-quiet{min-height:var(--h-md);padding:0 var(--s-4);border:0;border-radius:var(--r-full);background:transparent;color:var(--ink-2);font-size:var(--t-body);font-weight:600}
+.btn-quiet:hover{background:var(--hover)}
+.link{min-height:var(--h-sm);padding:0 var(--s-1);border:0;background:transparent;color:var(--ai-strong);font-size:var(--t-caption);font-weight:600;text-decoration:underline}
+.link.muted{color:var(--ink-2)}
+
+/* "Quer ajuda?" card and the collapsed badge */
+.bar{display:flex;flex-direction:column;gap:var(--s-2)}
+.bar-card{display:flex;align-items:center;flex-wrap:wrap;gap:var(--s-3);padding:var(--s-4);border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface);box-shadow:var(--e-3)}
+.badge{flex:0 0 auto;width:32px;height:32px;border-radius:var(--r-full);background:var(--ai-strong);color:#fff;display:flex;align-items:center;justify-content:center}
+.badge.sm{width:24px;height:24px}
+.bar-text{flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:var(--s-1)}
+.bar-text strong{font-size:var(--t-title);font-weight:700;color:var(--ink)}
+.bar-text span{font-size:var(--t-small);color:var(--ink-2)}
+.mail-hint{flex:1 1 100%;font-size:var(--t-caption);color:var(--ink-3)}
+.chip-row{display:flex;justify-content:flex-end}
+.fab{display:inline-flex;align-items:center;height:var(--h-sm);padding:0 var(--s-1);border:1px solid var(--line);border-radius:var(--r-full);background:var(--surface);color:var(--ai-strong);font-size:var(--t-small);font-weight:600;box-shadow:var(--e-1);transition:box-shadow .18s ease}
+.fab:hover,.fab:focus-visible{box-shadow:var(--e-2)}
+.fab-icon{flex:0 0 auto;width:24px;height:24px;border-radius:var(--r-full);background:var(--ai-strong);color:#fff;display:flex;align-items:center;justify-content:center}
+.fab-label{max-width:0;overflow:hidden;white-space:nowrap;opacity:0;transition:max-width .24s ease,opacity .18s ease,margin .24s ease}
+.fab:hover .fab-label,.fab:focus-visible .fab-label{max-width:170px;opacity:1;margin:0 var(--s-1) 0 var(--s-2)}
+.fab-count{min-width:16px;height:16px;margin:0 var(--s-1);padding:0 var(--s-1);border-radius:var(--r-full);background:var(--ai-strong);color:#fff;font-size:var(--t-micro);font-weight:700;display:flex;align-items:center;justify-content:center}
+
+/* Motion */
+@keyframes dalm-pop{from{opacity:0;transform:scale(.85)}to{opacity:1;transform:none}}
+@keyframes dalm-swap{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+@keyframes dalm-drop{from{opacity:0;transform:translateY(-8px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes dalm-slide-in{from{opacity:0;transform:translateX(32px)}to{opacity:1;transform:none}}
+@keyframes dalm-slide-out{to{opacity:0;transform:translateX(32px)}}
+@keyframes dalm-fade-out{to{opacity:0;transform:translateY(-6px)}}
+@keyframes dalm-spin{to{transform:rotate(360deg)}}
+.section.swap .section-head > :not(strong),.section.swap .hint{animation:dalm-swap .2s ease-out both}
+.section.swap .rows > li{animation:dalm-swap .24s cubic-bezier(.2,.8,.2,1) both;animation-delay:calc(min(var(--i, 0), 6) * 35ms)}
+.enter .fab{animation:dalm-pop .2s ease-out;transform-origin:right center}
+.enter .bar{animation:dalm-drop .22s ease-out;transform-origin:top right}
+.enter .panel{animation:dalm-slide-in .26s cubic-bezier(.2,.8,.2,1)}
+.leaving .panel{animation:dalm-slide-out .18s ease-in forwards}
+.leaving .bar{animation:dalm-fade-out .16s ease-in forwards}
+
+/* Panel frame */
+.panel{display:flex;flex-direction:column;height:var(--panel-height,560px);overflow:hidden;border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);box-shadow:var(--e-3)}
+.panel-head{position:relative;z-index:3;display:flex;align-items:center;gap:var(--s-2);padding:var(--s-2) var(--s-4);border-bottom:1px solid var(--line);cursor:grab;user-select:none;touch-action:none}
+.panel-head button{cursor:pointer}
+.panel-head strong{flex:1 1 auto;font-size:var(--t-title);font-weight:700;color:var(--ink)}
+.panel.dragging .panel-head{cursor:grabbing}
+.traffic{display:flex;align-items:center;gap:var(--s-1);margin-right:calc(-1 * var(--s-2))}
+.tl{position:relative;width:var(--h-sm);height:var(--h-sm);padding:0;border:0;border-radius:var(--r-full);background:transparent;color:var(--ink-3);display:flex;align-items:center;justify-content:center;transition:background .12s ease,color .12s ease}
+.tl:hover,.tl:focus-visible{background:var(--hover);color:var(--ai-strong)}
+.tl svg{stroke-width:2.4}
+.panel-body{flex:1 1 auto;min-height:0;overflow-y:auto;display:flex;flex-direction:column;gap:var(--s-4);padding:var(--s-4)}
+.panel-foot{display:flex;flex-direction:column;gap:var(--s-2);padding:var(--s-3) var(--s-4);border-top:1px solid var(--line);background:var(--surface)}
+.row{display:flex;align-items:center;flex-wrap:wrap;gap:var(--s-3)}
+
+/* Tooltips for icon-only controls */
+[data-tip]{position:relative}
+[data-tip]::after{content:attr(data-tip);position:absolute;top:calc(100% + 6px);left:50%;transform:translate(-50%,-2px);z-index:10;padding:var(--s-1) var(--s-2);border-radius:var(--r-sm);background:rgba(18,22,25,.92);color:#fff;font:600 var(--t-caption)/1.3 var(--font-ui);white-space:nowrap;opacity:0;pointer-events:none;transition:opacity .12s ease,transform .12s ease}
+[data-tip].tip-end::after{left:auto;right:0;transform:translateY(-2px)}
+[data-tip]:hover::after,[data-tip]:focus-visible::after{opacity:1;transform:translate(-50%,0);transition-delay:.35s}
+[data-tip].tip-end:hover::after,[data-tip].tip-end:focus-visible::after{transform:none}
+.tl[data-tip]::after{left:auto;right:0;transform:translateY(-2px)}
+.tl[data-tip]:hover::after,.tl[data-tip]:focus-visible::after{transform:none}
+
+/* Progress steps (system progress: grey, never an author colour) */
+.steps{display:flex;flex-direction:column;gap:var(--s-3);padding:var(--s-4)}
+.step{display:flex;align-items:center;gap:var(--s-2);font-size:var(--t-body)}
+.step.pending{color:var(--ink-3)}
+.step-dots{width:18px;text-align:center;color:var(--ink-3);font-weight:700}
+.summary{display:flex;align-items:center;gap:var(--s-2);font-size:var(--t-small);color:var(--ink-3)}
+.summary span{flex:1 1 auto}
+.steplist{display:flex;flex-direction:column;gap:var(--s-1);margin:0;padding:0 0 0 var(--s-5);list-style:none;font-size:var(--t-small);color:var(--ink-3)}
+.request{margin:0;font-size:var(--t-body);line-height:1.5}
+
+/* Sections */
+.section{display:flex;flex-direction:column;gap:var(--s-2)}
+.section-head{display:flex;align-items:baseline;gap:var(--s-2)}
+.section-head strong{flex:1 1 auto;font-size:var(--t-body);font-weight:700}
+.section-head span{font-size:var(--t-caption);font-weight:600;color:var(--ink-2);white-space:nowrap}
+.hint{font-size:var(--t-small);color:var(--ink-3)}
+.legend{display:inline-flex;align-items:center;gap:var(--s-1);white-space:nowrap}
+
+/* Plan steps: colour = author (--pc: grade 50, --pcs: grade 60), number = step */
+.rows{display:flex;flex-direction:column;gap:var(--s-1);margin:0;padding:0;list-style:none}
+.row-item{border-radius:var(--r-sm)}
+.row-item.open{box-shadow:inset 0 0 0 1px var(--line)}
+.row-item.hl{background:var(--hover);box-shadow:inset 3px 0 0 var(--pc)}
+.row-head{width:100%;display:flex;align-items:center;gap:var(--s-2);min-height:var(--h-md);padding:var(--s-1) var(--s-2);border:0;border-radius:var(--r-sm);background:transparent;color:inherit;font:inherit;text-align:left}
+button.row-head:hover{background:var(--hover)}
+.row-head.static{cursor:default}
+.pnum{flex:0 0 auto;width:20px;height:20px;border-radius:var(--r-full);background:var(--pcs,var(--ink-3));color:#fff;font-size:var(--t-caption);font-weight:700;display:flex;align-items:center;justify-content:center}
+.pnum.sm{width:16px;height:16px;font-size:var(--t-micro)}
+.pnum.ghost{border:1.5px dashed var(--field-line);background:transparent;color:var(--ink-3)}
+.row-text{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:2px}
+.row-title{min-width:0;overflow:hidden;font-size:var(--t-body);font-weight:600;color:var(--ink);text-overflow:ellipsis;white-space:nowrap}
+.row-title.plain{font-weight:400;white-space:normal}
+.row-title.done{color:var(--ink-3)}
+.row-sub{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;font-size:var(--t-small);line-height:1.35;color:var(--ink-3);white-space:pre-line}
+.row-owner{flex:0 0 auto;width:24px;height:24px;border-radius:var(--r-full);background:var(--you-tint);color:var(--you-strong);display:flex;align-items:center;justify-content:center}
+.row-owner.ai{background:var(--ai-tint);color:var(--ai-strong)}
+.chev{flex:0 0 auto;display:flex;color:var(--ink-3);transition:transform .12s ease}
+.row-item.open .chev{transform:rotate(180deg)}
+.row-body{display:flex;flex-direction:column;gap:var(--s-2);padding:0 var(--s-3) var(--s-3) 36px}
+.row-desc{margin:0;font-size:var(--t-small);line-height:1.45;color:var(--ink-2)}
+.state{flex:0 0 auto;width:22px;height:22px;display:flex;align-items:center;justify-content:center;color:var(--ink-3)}
+.state .dot{width:6px;height:6px;border-radius:var(--r-full);background:currentColor}
+.state.done{color:var(--pc,var(--you))}
+.state.ask{color:var(--warn)}
+.state .ring{width:15px;height:15px;border:1.5px dashed var(--pc,var(--field-line));border-radius:var(--r-full)}
+.state .spin{width:15px;height:15px;border:2px solid var(--line);border-top-color:var(--ai);border-radius:var(--r-full);animation:dalm-spin .8s linear infinite}
+
+/* Editing the plan */
+.row-item.editing .row-head{align-items:flex-start;padding-top:var(--s-2);padding-bottom:var(--s-2)}
+.row-item.editing .pnum{margin-top:10px}
+.edit-fields{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:var(--s-1)}
+.edit-title,.edit-desc{width:100%;min-height:var(--h-md);padding:0 var(--s-3);border:1px solid var(--field-line);border-radius:var(--r-sm);background:var(--surface);color:var(--ink);font:inherit}
+.edit-title{font-size:var(--t-body);font-weight:600}
+.edit-desc{display:block;padding:var(--s-2) var(--s-3);font-size:var(--t-small);line-height:1.45;color:var(--ink-2);resize:none;overflow:hidden}
+.icon-btn{flex:0 0 auto;width:var(--h-sm);height:var(--h-sm);margin-top:var(--s-1);padding:0;border:0;border-radius:var(--r-full);background:transparent;color:var(--danger);display:flex;align-items:center;justify-content:center}
+.icon-btn:hover{background:var(--danger-tint)}
+.icon-btn.add{color:var(--ai-strong)}
+.icon-btn.add:hover{background:var(--ai-tint)}
+
+/* Who writes a step (Eu / Assistente) and the person's row actions */
+.seg{display:inline-flex;align-self:flex-start;padding:2px;border:1px solid var(--field-line);border-radius:var(--r-full);background:var(--surface)}
+.seg button{display:inline-flex;align-items:center;gap:var(--s-1);min-height:28px;padding:0 var(--s-3);border:0;border-radius:var(--r-full);background:transparent;color:var(--ink-2);font-size:var(--t-caption);font-weight:600}
+.seg button[data-owner="user"][aria-pressed="true"]{background:var(--you-strong);color:#fff}
+.seg button[data-owner="ai"][aria-pressed="true"]{background:var(--ai-strong);color:#fff}
+.seg button:disabled{cursor:default;opacity:.55}
+.out{display:flex;align-items:center;flex-wrap:wrap;gap:var(--s-2);font-size:var(--t-small);color:var(--ink-3)}
+.act{min-height:var(--h-sm);padding:0 var(--s-3);border:1px solid var(--field-line);border-radius:var(--r-full);background:var(--surface);color:var(--you-strong);font-size:var(--t-caption);font-weight:600;white-space:nowrap}
+.act.primary{border-color:var(--ai-strong);background:var(--ai-strong);color:#fff}
+
+/* "Falta saber": a white card; yellow only marks what is missing */
+.needs{display:flex;flex-direction:column;gap:var(--s-2);padding:var(--s-3);border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface)}
+.needs .section-head strong::before{content:'?';display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;margin-right:var(--s-2);border-radius:var(--r-full);background:var(--warn-bg);color:var(--warn);font-size:var(--t-caption);font-weight:700;vertical-align:1px}
+.need{display:flex;flex-direction:column;gap:var(--s-2);padding-top:var(--s-3);border-top:1px solid var(--line)}
+.need-q{font-size:var(--t-body);font-weight:600;line-height:1.4;color:var(--ink)}
+.need-where{display:flex;align-items:center;flex-wrap:wrap;gap:var(--s-2);font-size:var(--t-caption);line-height:1.4;color:var(--ink-3)}
+.need-where .link{min-height:24px;padding:0 2px;font-size:var(--t-caption)}
+.need-sentence{flex:1 1 200px;min-width:0;font-style:italic}
+.need-sentence mark{padding:0 3px;border-radius:var(--r-xs);background:var(--warn-bg);color:var(--warn-ink);font-style:normal}
+.need.filled .need-sentence mark{background:var(--ai-tint);color:var(--ai-strong)}
+.need-field{position:relative}
+.need-field.has-pill .need-input{padding-right:112px}
+.need-input{display:block;width:100%;min-height:var(--h-md);padding:var(--s-2) var(--s-3);border:1px solid var(--warn-line);border-radius:var(--r-sm);background:var(--surface);color:var(--ink);font:inherit;font-size:var(--t-body);line-height:1.4;resize:none;overflow:hidden}
+.need-input.filled{border-color:var(--field-line)}
+.sugg-pill{position:absolute;top:var(--s-2);right:var(--s-2);display:inline-flex;align-items:center;gap:2px;min-height:24px;padding:0 var(--s-2);border:0;border-radius:var(--r-full);background:var(--ai-tint);color:var(--ai-strong);font-size:var(--t-caption);font-weight:600}
+.sugg-menu{display:none;position:absolute;top:calc(100% + var(--s-1));left:0;right:0;z-index:6;flex-direction:column;padding:var(--s-1);border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface);box-shadow:var(--e-2)}
+.need-field:focus-within:not(.has-value) .sugg-menu{display:flex;animation:dalm-drop .14s ease-out}
+.sugg{display:flex;flex-direction:column;align-items:flex-start;gap:2px;padding:var(--s-2) var(--s-3);border:0;border-radius:var(--r-sm);background:transparent;color:var(--ink);font-size:var(--t-small);text-align:left}
+.sugg:hover,.sugg:focus-visible{background:var(--hover)}
+.sugg-src{font-size:var(--t-caption);color:var(--ink-3)}
+.sugg-src.warn{color:var(--warn);font-weight:600}
+
+/* Sources behind a step */
+.srcs{display:flex;flex-direction:column;gap:var(--s-2)}
+.srcs-head,.srcs-none{font-size:var(--t-caption);font-weight:600;color:var(--ink-3)}
+.src{display:flex;flex-direction:column;gap:var(--s-1);margin:0}
+.src figcaption{font-size:var(--t-small);font-weight:600;color:var(--ink-2)}
+.src blockquote{margin:0;padding:2px 0 2px var(--s-3);border-left:2px solid var(--line);font-size:var(--t-small);line-height:1.45;color:var(--ink-3)}
+.src blockquote mark{padding:0 2px;border-radius:var(--r-xs);background:var(--warn-bg);color:var(--warn-ink)}
+
+/* Footer: Mais menu, status message */
+.btn-more{display:inline-flex;align-items:center;gap:var(--s-1);min-height:var(--h-md);margin-left:auto;padding:0 var(--s-3);border:0;border-radius:var(--r-full);background:transparent;color:var(--ink-2);font-size:var(--t-small);font-weight:600}
+.btn-more:hover{background:var(--hover)}
+.btn-more svg{transition:transform .1s ease}
+.btn-more[aria-expanded="true"] svg{transform:rotate(180deg)}
+.menu{display:flex;flex-direction:column;padding:var(--s-1);border:1px solid var(--line);border-radius:var(--r-md);background:var(--surface);box-shadow:var(--e-2)}
+.menu.opening{animation:dalm-drop .16s ease-out}
+.menu-item{min-height:var(--h-md);padding:0 var(--s-3);border:0;border-radius:var(--r-sm);background:transparent;color:var(--ink);font-size:var(--t-body);text-align:left}
+.menu-item:hover{background:var(--hover)}
+.message{font-size:var(--t-small);font-weight:600;color:var(--ink-2)}
+.message.warn{color:var(--warn)}
+.send-tip{display:flex;align-items:center;gap:var(--s-2);max-width:360px;padding:var(--s-2) var(--s-3);border:1px solid var(--warn-line);border-radius:var(--r-md);background:var(--surface);color:var(--warn);font-size:var(--t-small);font-weight:600;box-shadow:var(--e-2)}
+.enter .send-tip{animation:dalm-drop .16s ease-out}
+.persist{display:flex;align-items:flex-start;gap:var(--s-2);font-size:var(--t-caption);color:var(--ink-3)}
+.persist input{width:16px;height:16px;margin:1px 0 0;accent-color:var(--ai-strong)}
+
+/* First-use guide */
+.guide{display:flex;flex-direction:column;gap:var(--s-4);padding:var(--s-5);border:1px solid var(--line);border-radius:var(--r-lg);background:var(--surface);box-shadow:var(--e-3)}
+.eyebrow{font-size:var(--t-caption);font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--ai-strong)}
+.guide > strong{font-size:var(--t-title);font-weight:700;line-height:1.3;color:var(--ink)}
+.guide ol{display:flex;flex-direction:column;gap:var(--s-3);margin:0;padding:0;list-style:none;font-size:var(--t-body)}
+.guide li{display:flex;align-items:flex-start;gap:var(--s-3)}
+.num{flex:0 0 auto;width:24px;height:24px;border-radius:var(--r-full);background:var(--ai-tint);color:var(--ai-strong);font-size:var(--t-caption);font-weight:700;display:flex;align-items:center;justify-content:center}
+@media (prefers-reduced-motion: reduce){*{transition:none!important;animation:none!important}.state .spin{animation:dalm-spin 3s linear infinite!important}}
 `
 
-const myIFrame = `
-  <iframe src="${chrome.runtime.getURL('index.html')}" 
-    style="
-      width: inherit;
-      height: inherit;
-    ">
-  </iframe>
-`
-let div = document.createElement('div')
-div.style.cssText = cssContent
-div.innerHTML = myIFrame
-document.body.insertBefore(div, document.body.firstChild)
+// Sizes, in px. The badge and the "Quer ajuda?" card sit at the reply's
+// top-right corner; the panel docks to the right edge of the window.
+const PANEL_WIDTH = 420
+const BAR_WIDTH = 440
+const PANEL_MIN_HEIGHT = 280
+const EDGE = 8 // gap to the reply's corner
+const DOCK_GAP = 16 // gap between the docked panel and the window's edges
+const LEAVE_MS = 180 // length of the closing animations
+
+// Where the person dragged the panel ({ left, top } in px), or null when it is
+// docked to the right edge. Shared by every reply on the page and kept until
+// the page reloads; double-clicking the panel's header docks it again.
+let panelSpot = null
+
+// Page-level styles: the font, and the floating host. The host lives on
+// <body>, not inside Gmail's reply, so it never changes Gmail's layout and no
+// Gmail container can clip it.
+function injectPageStyles() {
+  if (document.getElementById('dalm-page-style')) return
+  const style = document.createElement('style')
+  style.id = 'dalm-page-style'
+  const font = chrome.runtime.getURL('fonts/public-sans-latin-wght-normal.woff2')
+  style.textContent = `
+    @font-face{font-family:'Public Sans DALM';font-style:normal;font-weight:100 900;font-display:swap;
+      src:url(${font}) format('woff2-variations'),url(${font}) format('woff2')}
+    [data-dalm-host]{display:block;position:fixed;z-index:990;margin:0}
+  `
+  document.head.appendChild(style)
+}
+
+// Gmail listens for keyboard shortcuts on the page. Key events from inside a
+// shadow root are retargeted to the host, so typing "c" in one of our fields
+// would open a new message. Stop them (and clicks) at the host.
+function isolateEvents(host) {
+  for (const type of ['keydown', 'keyup', 'keypress', 'input', 'mousedown', 'mouseup', 'click', 'dblclick', 'pointerdown']) {
+    host.addEventListener(type, (e) => e.stopPropagation())
+  }
+}
+
+// --- Rendering helpers ------------------------------------------------------
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
+const SPARK = (s) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.8 4.7 4.7 1.8-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/></svg>`
+const TICK = (s, color, w) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`
+
+// Inlined from public/icons/*.svg (edit those, then copy the shapes here), so
+// they take the panel's colours through currentColor.
+const ICON_SHAPES = {
+  check: '<path d="M4.5 12.5l5 5L19.5 7"/>',
+  question: '<path d="M8.5 8a3.5 3.5 0 1 1 5.25 3.03C12.7 11.63 12 12.4 12 13.6v1.4"/><circle cx="12" cy="19.5" r="1.25" fill="currentColor" stroke="none"/>',
+  robot: '<path d="M12 8V5.5"/><circle cx="12" cy="3.5" r="1.5"/><rect x="4" y="8" width="16" height="12" rx="3"/><path d="M2 12.5v3"/><path d="M22 12.5v3"/><circle cx="9" cy="13" r="1.25" fill="currentColor" stroke="none"/><circle cx="15" cy="13" r="1.25" fill="currentColor" stroke="none"/><path d="M10 16.5h4"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21v-1a6 6 0 0 1 6-6h4a6 6 0 0 1 6 6v1"/>',
+  chevron: '<path d="M6 9l6 6 6-6"/>',
+  remove: '<circle cx="12" cy="12" r="9"/><path d="M8 12h8"/>',
+  add: '<circle cx="12" cy="12" r="9"/><path d="M8 12h8M12 8v8"/>',
+  minus: '<path d="M5 12h14"/>'
+}
+const ICON = (name, s) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_SHAPES[name]}</svg>`
+
+// --- First-use guide (one per page) -----------------------------------------
+let guideHost = null
+
+function showGuide() {
+  if (guideHost) return
+  guideHost = document.createElement('div')
+  guideHost.style.cssText = `position:fixed;top:96px;left:50%;transform:translateX(-50%);z-index:2147483000;width:min(560px,calc(100vw - 32px))`
+  isolateEvents(guideHost)
+  const root = guideHost.attachShadow({ mode: 'open' })
+  root.innerHTML = `<style>${UI_CSS}</style>
+    <div class="root guide" role="dialog" aria-label="Como funciona o Assistente DALM"><span class="eyebrow">Assistente DALM · opcional</span>
+    <strong>Uma ajuda para não esquecer nada nas respostas</strong><ol>
+    <li><span class="num">1</span><span>Clique em <strong>Preparar a lista</strong>. O assistente diz o que percebeu do pedido e o que a resposta deve tratar.</span></li>
+    <li><span class="num">2</span><span>Em cada ponto, escolha se fica para si ${ICON('user', 15)} ou para o assistente ${ICON('robot', 15)}. Se faltar informação, preencha-a ou deixe em branco.</span></li>
+    <li><span class="num">3</span><span>Se quiser, clique em <strong>Gerar os pontos do assistente</strong>: ele só escreve os pontos que lhe deu. Leia o texto e confirme cada um. <strong>Nada é enviado sem si.</strong></span></li>
+    </ol>
+    <label class="persist"><input type="checkbox" ${prefs.prepareAlways ? 'checked' : ''} data-a="toggleAlways">Preparar esta lista sempre que abro uma resposta (fica guardado)</label>
+    <div><button class="btn-primary" data-a="closeGuide">Percebi</button></div></div>`
+  // "Preparar sempre" lives here rather than in the panel footer, which it
+  // crowded (HANDOFF.md open issue 10).
+  root.addEventListener('change', (e) => {
+    if (e.target.dataset.a === 'toggleAlways') {
+      savePref('prepareAlways', e.target.checked)
+      logEvent('pref_prepare_always', { value: e.target.checked })
+    }
+  })
+  root.addEventListener('click', (e) => { if (e.target.closest('[data-a="closeGuide"]')) closeGuide() })
+  root.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeGuide() })
+  document.body.appendChild(guideHost)
+  root.querySelector('[data-a="closeGuide"]').focus()
+}
+
+function closeGuide() {
+  if (!guideHost) return
+  guideHost.remove()
+  guideHost = null
+  savePref('guideSeen', true)
+}
+
+// --- The assistant attached to one reply box --------------------------------
+function createAssistant(replyBox) {
+  const host = document.createElement('div')
+  host.dataset.dalmHost = ''
+  isolateEvents(host)
+  const root = host.attachShadow({ mode: 'open' })
+  document.body.appendChild(host)
+
+  let S = {
+    view: 'ready', // 'ready' | 'declined' | 'working' | 'list'
+    request: '', points: [], outside: [], steps: [], sources: [], values: {},
+    editing: false, snapshot: null, newText: '', newDesc: '',
+    stepTexts: [], stepIdx: 0, stepsOpen: false, hadList: false,
+    error: null, retry: null,
+    openIds: [], // the plan steps that are opened (any number at once)
+    moreOpen: false // the "Mais" menu
+  }
+  let timer = null
+  let workToken = 0 // bumped on cancel, so a late response is ignored
+
+  // Study events from this reply carry its ticket (the hashed thread ID, the
+  // same one sent to /list), and their text has the senders' names removed.
+  // Reading the thread ID and the senders' names reads nothing of the email.
+  let ticket = null
+  const ticketReady = Promise.resolve(findThreadView(replyBox))
+    .then((tv) => tv && sha256(getThreadId(tv)))
+    .then((t) => { ticket = t || null }, () => {})
+  const senderNames = () => {
+    const tv = findThreadView(replyBox)
+    return tv ? [...tv.querySelectorAll('.gD')].map((s) => s.getAttribute('name') || s.textContent.trim()).filter(Boolean) : []
+  }
+  function log(event, fields, content) {
+    const e = logEvent(event, fields, content, content ? senderNames() : [])
+    if (ticket) e.ticket = ticket
+    else ticketReady.then(() => { e.ticket = ticket })
+  }
+
+  function set(patch) {
+    S = Object.assign({}, S, typeof patch === 'function' ? patch(S) : patch)
+    render()
+  }
+
+  const has = (key) => !!(S.values[key] || '').trim()
+  // A value as it goes into the email: it fills a gap inside a sentence, so
+  // line breaks typed in the (multi-line) field become spaces.
+  const fill = (key) => (S.values[key] || '').trim().replace(/\s*\n\s*/g, ' ')
+
+  // Shows the progress steps one at a time while `work` runs. The last step
+  // stays in progress until the work settles; then `after(result)` is applied,
+  // or an error with "Tentar outra vez" (which reruns the action `retry`).
+  function runWork(texts, work, after, retry) {
+    clearTimeout(timer)
+    const token = ++workToken
+    set({ view: 'working', stepTexts: texts, stepIdx: 0, editing: false, error: null, retry })
+    let settled = false
+    let animated = false
+    let result
+    let failure = null
+    const finish = () => {
+      if (token !== workToken || !settled || !animated) return
+      if (failure) set({ error: failure })
+      else set(after(result))
+    }
+    work.then((r) => { result = r }, (e) => { failure = e })
+      .finally(() => { settled = true; finish() })
+    const tick = (i) => {
+      timer = setTimeout(() => {
+        if (i >= texts.length) { animated = true; finish(); return }
+        set({ stepIdx: i })
+        tick(i + 1)
+      }, STEP_DELAY_MS)
+    }
+    tick(1)
+  }
+
+  function stopWork() {
+    clearTimeout(timer)
+    workToken++
+  }
+
+  // The conversation scrolls inside a Gmail container, not the page.
+  const scroller = (() => {
+    for (let n = replyBox.parentElement; n; n = n.parentElement) {
+      if (/(auto|scroll)/.test(getComputedStyle(n).overflowY)) return n
+    }
+    return null
+  })()
+
+  const panelOpen = () => S.view === 'working' || S.view === 'list'
+
+  // Floats over Gmail like LanguageTool: nothing in Gmail's layout changes, so
+  // the person's text never moves. The badge and the "Quer ajuda?" card sit at
+  // the reply's top-right corner (sticking to the top of the visible area while
+  // the reply scrolls, hidden when it is out of view); the panel docks to the
+  // right edge of the window, below Gmail's top bar, and stays put.
+  function position() {
+    placeHost()
+    drawMarks()
+  }
+
+  function placeHost() {
+    if (!replyBox.isConnected) return
+    const clip = scroller ? scroller.getBoundingClientRect() : { top: 0, bottom: window.innerHeight }
+    const viewportWidth = document.documentElement.clientWidth
+    if (panelOpen()) {
+      const width = Math.max(280, Math.min(PANEL_WIDTH, viewportWidth - 2 * DOCK_GAP))
+      const dockTop = Math.max(clip.top, 0) + DOCK_GAP / 2
+      let top = dockTop
+      host.style.display = ''
+      host.style.width = `${width}px`
+      if (panelSpot) {
+        // Dragged: keep it inside the window, with room for a usable height.
+        const clamp = (v, lo, hi) => Math.min(Math.max(v, lo), Math.max(lo, hi))
+        top = clamp(panelSpot.top, DOCK_GAP / 2, window.innerHeight - PANEL_MIN_HEIGHT - DOCK_GAP)
+        host.style.left = `${clamp(panelSpot.left, DOCK_GAP / 2, viewportWidth - width - DOCK_GAP / 2)}px`
+        host.style.removeProperty('right')
+      } else {
+        host.style.removeProperty('left')
+        host.style.right = `${DOCK_GAP}px`
+      }
+      host.style.top = `${top}px`
+      host.style.setProperty('--panel-height', `${Math.max(PANEL_MIN_HEIGHT, window.innerHeight - top - DOCK_GAP)}px`)
+      return
+    }
+    host.style.removeProperty('left')
+    const r = replyBox.getBoundingClientRect()
+    const top = Math.max(r.top, clip.top) + EDGE
+    const visible = Math.min(r.bottom, clip.bottom) - top
+    if (!r.width || visible < 24) { host.style.display = 'none'; return }
+    host.style.display = ''
+    host.style.top = `${top}px`
+    host.style.right = `${viewportWidth - r.right + EDGE}px`
+    host.style.width = S.view === 'ready' ? `${Math.min(BAR_WIDTH, r.width - 2 * EDGE)}px` : 'auto'
+  }
+
+  // --- Linked colours between the plan and the email (REDESIGN_PLAN.md E4) ---
+  // A step's colour says who writes it (docs/DESIGN_KIT.md): IBM cyan for the
+  // assistant, IBM teal for the person. Its number says which step: the same
+  // numbered circle appears in the plan and at the top of its bar in the
+  // email's margin. Everything is drawn in a transparent layer over the email,
+  // as LanguageTool draws its underlines, so the email itself never changes.
+  // Hovering a step outlines its section; hovering a section highlights its
+  // step. Only sections the extension placed are linked.
+  // Grade 50 for shapes (bars, icons, outlines); grade 60 where white text
+  // sits on the colour (numbered circles), since white on 50 is only 3.3:1.
+  const OWNER_COLOR = { ai: '#1192e8', user: '#009d9a' } // Cyan 50, Teal 50
+  const OWNER_STRONG = { ai: '#0072c3', user: '#007d79' } // Cyan 60, Teal 60
+  const ownerOf = (id) => { const p = S.points.find((x) => x.id === id); return p && p.owner === 'ai' ? 'ai' : 'user' }
+  const colorOf = (id) => OWNER_COLOR[ownerOf(id)]
+  const strongOf = (id) => OWNER_STRONG[ownerOf(id)]
+  const stepVars = (id) => `--pc:${colorOf(id)};--pcs:${strongOf(id)}`
+  const tint = (hex, a) => `rgba(${parseInt(hex.slice(1, 3), 16)},${parseInt(hex.slice(3, 5), 16)},${parseInt(hex.slice(5, 7), 16)},${a})`
+  let hoverId = null
+
+  const marks = document.createElement('div')
+  marks.dataset.dalmHost = ''
+  Object.assign(marks.style, { zIndex: '989', pointerEvents: 'none', overflow: 'hidden', display: 'none' })
+  document.body.appendChild(marks)
+
+  function drawMarks() {
+    if (!S.hadList || !blocks.size || !replyBox.isConnected || !replyBox.getBoundingClientRect().width) { marks.style.display = 'none'; return }
+    // Clip to the visible part of the conversation, so marks never float over
+    // Gmail's header when the reply is scrolled.
+    const clip = scroller ? scroller.getBoundingClientRect() : { left: 0, top: 0, width: window.innerWidth, height: window.innerHeight }
+    Object.assign(marks.style, { display: '', left: `${clip.left}px`, top: `${clip.top}px`, width: `${clip.width}px`, height: `${clip.height}px` })
+    let html = ''
+    for (const [id, b] of blocks) {
+      if (!b.el.isConnected) continue
+      const r = b.el.getBoundingClientRect()
+      if (!r.height) continue
+      const top = r.top - clip.top
+      const left = r.left - clip.left
+      const c = colorOf(id)
+      const hot = hoverId === id
+      const empty = b.kind === 'slot' && untouched(b)
+      const n = S.points.findIndex((p) => p.id === id) + 1
+      html += `<div style="position:absolute;left:${left - 10}px;top:${top}px;width:3px;height:${r.height}px;border-radius:2px;background:${c};opacity:${hot ? 1 : 0.55}"></div>`
+      if (n > 0) html += `<div style="position:absolute;left:${left - 32}px;top:${top + 1}px;width:16px;height:16px;border-radius:999px;background:${strongOf(id)};color:#fff;font:700 10px/16px 'Public Sans DALM',Arial,sans-serif;text-align:center;opacity:${hot ? 1 : 0.85}">${n}</div>`
+      if (hot || empty) {
+        html += `<div style="position:absolute;left:${left - 5}px;top:${top - 2}px;width:${r.width + 10}px;height:${r.height + 4}px;border-radius:6px;border:1.5px ${empty && !hot ? 'dashed' : 'solid'} ${c};background:${hot ? tint(c, 0.08) : 'transparent'};box-sizing:border-box"></div>`
+      }
+    }
+    marks.innerHTML = html
+  }
+
+  function setHover(id) {
+    if (id === hoverId) return
+    hoverId = id
+    drawMarks()
+    for (const li of root.querySelectorAll('.row-item[data-pid]')) li.classList.toggle('hl', li.dataset.pid === id)
+  }
+
+  // Hover from the panel…
+  // A plan step, or a "Falta saber" card (which points at the step that uses
+  // the value), outlines its section in the email.
+  const linkedPoint = (target) => {
+    const el = target.closest && target.closest('.row-item[data-pid], .need[data-owner]')
+    const id = el && (el.dataset.pid || el.dataset.owner)
+    return id && blocks.has(id) ? id : null
+  }
+  root.addEventListener('mouseover', (e) => setHover(linkedPoint(e.target)))
+  // Pressing a suggestion (or the pill) keeps focus in the field, so the
+  // dropdown doesn't close before the click lands.
+  root.addEventListener('mousedown', (e) => { if (e.target.closest('.sugg, .sugg-pill')) e.preventDefault() })
+  root.addEventListener('focusin', (e) => { const id = linkedPoint(e.target); if (id) setHover(id) })
+  host.addEventListener('mouseleave', () => setHover(null))
+  // …and from the email.
+  replyBox.addEventListener('mousemove', (e) => {
+    let found = null
+    for (const [id, b] of blocks) if (b.el.isConnected && b.el.contains(e.target)) { found = id; break }
+    setHover(found)
+  })
+  replyBox.addEventListener('mouseleave', () => setHover(null))
+
+  // Opening a point brings its section into view if it's out of sight.
+  function scrollToSection(id) {
+    const b = blocks.get(id)
+    if (!b || !b.el.isConnected || typeof b.el.scrollIntoView !== 'function') return
+    const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    b.el.scrollIntoView({ block: 'nearest', behavior: reduced ? 'auto' : 'smooth' })
+  }
+
+  // Dragging the panel by its header (not by its buttons). Listening on the
+  // window keeps the drag going even if the panel re-renders under the pointer.
+  root.addEventListener('pointerdown', (e) => {
+    const head = e.target.closest('.panel-head')
+    if (!head || e.button !== 0 || e.target.closest('button, a, input')) return
+    e.preventDefault()
+    const start = host.getBoundingClientRect()
+    const dx = e.clientX - start.left
+    const dy = e.clientY - start.top
+    const panel = root.querySelector('.panel')
+    if (panel) panel.classList.add('dragging')
+    const move = (ev) => { panelSpot = { left: ev.clientX - dx, top: ev.clientY - dy }; position() }
+    const up = () => {
+      window.removeEventListener('pointermove', move, true)
+      window.removeEventListener('pointerup', up, true)
+      const p = root.querySelector('.panel')
+      if (p) p.classList.remove('dragging')
+    }
+    window.addEventListener('pointermove', move, true)
+    window.addEventListener('pointerup', up, true)
+  })
+  root.addEventListener('dblclick', (e) => {
+    if (!e.target.closest('.panel-head') || e.target.closest('button, a, input')) return
+    panelSpot = null
+    position()
+  })
+
+  // Opening and closing a step's details, and the Mais menu, animate both
+  // ways. Opening runs after the redraw that adds the details (unfold);
+  // closing runs first and only then applies the change (foldThen), since
+  // the redraw would remove them at once.
+  const FOLD_MS = 200 // opening
+  const UNFOLD_BACK_MS = 120 // closing: quicker than opening
+  const reducedMotion = () => !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+  const canAnimate = (el) => !!el && typeof el.animate === 'function' && !reducedMotion()
+  const folding = new Set()
+
+  function unfold(li) {
+    const body = li.querySelector('.row-body')
+    if (!canAnimate(body)) return
+    const h = body.offsetHeight
+    body.style.overflow = 'hidden'
+    body.animate([{ height: '0px', opacity: 0, paddingBottom: '0px' }, { height: `${h}px`, opacity: 1, paddingBottom: '10px' }],
+      { duration: FOLD_MS, easing: 'cubic-bezier(.2,.8,.2,1)' }).onfinish = () => { body.style.overflow = '' }
+    const chev = li.querySelector('.chev')
+    if (chev) chev.animate([{ transform: 'rotate(0deg)' }, { transform: 'rotate(180deg)' }], { duration: FOLD_MS, easing: 'ease' })
+  }
+
+  function foldThen(id, apply) {
+    const li = rowEl(id)
+    const body = li && li.querySelector('.row-body')
+    if (!canAnimate(body)) { apply(); return }
+    if (folding.has(id)) return
+    folding.add(id)
+    const h = body.offsetHeight
+    body.style.overflow = 'hidden'
+    li.classList.remove('open') // the arrow turns back through its CSS transition
+    body.animate([{ height: `${h}px`, opacity: 1, paddingBottom: '10px' }, { height: '0px', opacity: 0, paddingBottom: '0px' }],
+      { duration: UNFOLD_BACK_MS, easing: 'ease-in', fill: 'forwards' }).onfinish = () => { folding.delete(id); apply() }
+  }
+
+  function closeMenuThen(apply) {
+    const menu = root.querySelector('.menu')
+    if (!canAnimate(menu)) { apply(); return }
+    const button = root.querySelector('.btn-more')
+    if (button) button.setAttribute('aria-expanded', 'false') // its arrow turns back
+    menu.animate([{ opacity: 1, transform: 'none' }, { opacity: 0, transform: 'translateY(6px)' }],
+      { duration: 100, easing: 'ease-in', fill: 'forwards' }).onfinish = apply
+  }
+
+  // Plays the closing animation, then applies the change.
+  function leaveThen(patch) {
+    const reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const box = root.querySelector('.root')
+    if (reduced || !box) { set(patch); return }
+    box.classList.add('leaving')
+    setTimeout(() => set(patch), LEAVE_MS)
+  }
+
+  let lastShown = null
+  let positionFrame = 0
+  const schedulePosition = () => {
+    if (!positionFrame) positionFrame = requestAnimationFrame(() => { positionFrame = 0; position() })
+  }
+
+  // The panel is redrawn on every state change (each keystroke in a field,
+  // each status change, typing in the email). Keep the list's scroll position
+  // across redraws on the same screen, and play small opening animations only
+  // when something actually opens, not on every redraw.
+  let lastScreen = null
+  let lastOpenIds = []
+  let lastMoreOpen = false
+  // Switching the plan between viewing and editing: the steps fade in from
+  // slightly below, one after another (.section.swap), once per switch.
+  let lastEditing = null
+  let editSwap = false
+  let openingIds = []
+  let moreOpening = false
+  // The step the person just acted on (owner, Feito/Desfazer, opening). Its
+  // change can resize things above it, e.g. "Falta saber" growing or
+  // shrinking, so the redraw keeps that step where it was on screen.
+  let keepInPlace = null
+  const rowEl = (id) => id && [...root.querySelectorAll('.row-item[data-pid]')].find((li) => li.dataset.pid === id)
+
+  function render() {
+    const active = root.activeElement && root.activeElement.id
+      ? { id: root.activeElement.id, pos: root.activeElement.selectionStart }
+      : null
+    const body = root.querySelector('.panel-body')
+    const scrollTop = body ? body.scrollTop : 0
+    const screen = S.view
+    const anchor = rowEl(keepInPlace)
+    const anchorTop = anchor ? anchor.getBoundingClientRect().top : null
+    const anchorId = keepInPlace
+    keepInPlace = null
+
+    openingIds = S.openIds.filter((id) => !lastOpenIds.includes(id))
+    moreOpening = !!S.moreOpen && !lastMoreOpen
+    lastOpenIds = S.openIds
+    lastMoreOpen = !!S.moreOpen
+    editSwap = S.view === 'list' && lastEditing !== null && !!S.editing !== lastEditing
+    lastEditing = S.view === 'list' ? !!S.editing : null
+
+    let h = ''
+    if (S.view === 'ready') h = renderBar()
+    else if (S.view === 'declined') h = renderBadge()
+    else h = renderPanel()
+    // Opening animations play only when what is shown changes, not on every
+    // re-render (which happens on each keystroke in the panel's fields).
+    const shown = panelOpen() ? 'panel' : S.view
+    const enter = shown !== lastShown
+    lastShown = shown
+    root.innerHTML = `<style>${UI_CSS}</style><div class="root ${enter ? 'enter' : ''}">${h}</div>`
+    // Description boxes grow to fit their text (no inner scrollbar).
+    for (const box of root.querySelectorAll('textarea.edit-desc, textarea.need-input')) {
+      box.style.height = 'auto'
+      box.style.height = `${box.scrollHeight + 2}px`
+    }
+    const newBody = root.querySelector('.panel-body')
+    if (newBody && screen === lastScreen) {
+      newBody.scrollTop = scrollTop
+      const moved = rowEl(anchorId)
+      if (moved && anchorTop != null) newBody.scrollTop += moved.getBoundingClientRect().top - anchorTop
+    }
+    lastScreen = screen
+    position()
+    for (const id of openingIds) {
+      const li = rowEl(id)
+      if (li) unfold(li)
+    }
+
+    if (active) {
+      const el = root.getElementById(active.id)
+      if (el) {
+        el.focus({ preventScroll: true })
+        if (el.setSelectionRange && active.pos != null) el.setSelectionRange(active.pos, active.pos)
+      }
+    }
+  }
+
+  // Collapsed: a round badge that opens into "Mostrar assistente" on hover or
+  // keyboard focus, with the number of points still to do once there is a list.
+  function renderBadge() {
+    const pending = S.hadList ? S.points.filter((p) => pointState(p) !== 'done').length + S.outside.filter((o) => !o.done).length : 0
+    const count = pending ? `<span class="fab-count" aria-hidden="true">${pending}</span>` : ''
+    const label = pending ? `Mostrar assistente (${pending} por fazer)` : 'Mostrar assistente'
+    return `<div class="chip-row"><button class="fab" data-a="reopen" aria-label="${label}" title="${label}">
+      <span class="fab-icon">${SPARK(14)}</span><span class="fab-label">Mostrar assistente</span>${count}</button></div>`
+  }
+
+  function renderBar() {
+    return `<div class="bar"><div class="bar-card">
+      <span class="badge">${SPARK(18)}</span>
+      <div class="bar-text"><strong>Quer ajuda com este pedido?</strong><span>O assistente pode preparar uma lista do que a resposta deve tratar. Só lê o email se clicar.</span></div>
+      <button class="btn-primary" data-a="askList">Preparar a lista</button>
+      <button class="btn-quiet" data-a="decline">Não, obrigado</button>
+    <span class="mail-hint">Ou escreva a sua resposta, como sempre.</span></div></div>`
+  }
+
+  function renderPanel() {
+    // Header controls on the right, ? then −: plain icons, always visible,
+    // each with a text label shown on hover (data-tip). The empty title stops the header's own
+    // tooltip from showing over them.
+    let h = `<aside class="panel" aria-label="Assistente DALM"><div class="panel-head" title="Arraste para mover · duplo clique para voltar ao lado">
+      <span class="badge sm">${SPARK(13)}</span><strong>Assistente DALM</strong>
+      <span class="traffic">
+        <button class="tl tl-help" data-a="openHelp" aria-label="Como funciona" data-tip="Como funciona" title="">${ICON('question', 17)}</button>
+        <button class="tl tl-min" data-a="hide" aria-label="Esconder" data-tip="Esconder" title="">${ICON('minus', 17)}</button>
+      </span></div>`
+
+    if (S.view === 'working' && S.error) {
+      return h + `<div class="steps"><span class="message warn" role="alert">${esc(errorMessage(S.error))}</span>
+        <div class="row"><button class="btn-primary" data-a="retry">Tentar outra vez</button><button class="btn-quiet" data-a="cancel">Cancelar</button></div></div></aside>`
+    }
+
+    if (S.view === 'working') {
+      return h + `<div class="steps">` + S.stepTexts.map((t, i) => `<div class="step ${i > S.stepIdx ? 'pending' : ''}">${i < S.stepIdx ? TICK(18, '#697077', 2.6) : '<span class="step-dots" aria-hidden="true">…</span>'}<span>${esc(t)}</span></div>`).join('') +
+        `<div><button class="btn-secondary" data-a="cancel">Cancelar</button></div></div></aside>`
+    }
+
+    const writing = S.points.some((p) => p.writing)
+    const wroteSomething = blocks.size > 0
+    const toWrite = pointsToWrite()
+    // List-only phase (GET /config): no generation buttons at all.
+    const canGenerate = study.generate_enabled
+    const regenerable = canGenerate ? regenerableIds() : []
+    const doneCount = S.points.filter((p) => pointState(p) === 'done').length
+    const totalNeeds = aiNeeds().length
+    const stepItems = S.steps.map((s) => `<li>${esc(s)}</li>`)
+    if (totalNeeds) stepItems.push(`<li>${totalNeeds === 1 ? 'Não encontrei 1 informação (em «Falta saber»)' : `Não encontrei ${totalNeeds} informações (em «Falta saber»)`}</li>`)
+    if (S.sources.length) stepItems.push(`<li>Fontes: ${S.sources.map(esc).join('; ')}</li>`)
+
+    h += `<div class="panel-body">
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div class="summary">${TICK(15, '#697077', 2.6)}<span>${wroteSomething ? 'Escrevi a resposta no email' : 'Li o email e preparei esta lista'}</span>
+        <button class="link" aria-expanded="${S.stepsOpen}" data-a="toggleSteps">${S.stepsOpen ? 'Esconder passos' : 'Ver passos'}</button></div>
+        ${S.stepsOpen ? `<ul class="steplist">${stepItems.join('')}</ul>` : ''}
+      </div>
+      <p class="request"><strong>O pedido:</strong> ${esc(S.request)}</p>
+      ${renderNeeds()}
+      <div class="section ${editSwap ? 'swap' : ''}">
+        <div class="section-head"><strong>Plano de resposta:</strong>
+          ${S.editing
+            ? '<button class="link muted" data-a="cancelEdit">Anular</button><button class="link" data-a="finishEdit">Concluir</button>'
+            : `<span>${doneCount} de ${S.points.length} feitos</span><button class="link" data-a="startEdit">Editar</button>`}</div>
+        <span class="hint">${S.editing
+          ? 'Mude o texto, apague ou acrescente passos. O plano é seu.'
+          : !canGenerate ? '' : `O assistente escreve os passos com <span class="legend">${ICON('robot', 14)}</span>; nos seus <span class="legend">${ICON('user', 14)}</span> deixa um espaço no texto.`}</span>
+        <ul class="rows">${S.points.map(S.editing ? renderPointEdit : renderPoint).join('')}${S.editing ? renderNewStep() : ''}</ul></div>
+      ${S.outside.length ? `<div class="section"><strong style="font-size:var(--t-body)">Ações fora do email:</strong>
+        <ul class="rows">${S.outside.map(renderOutside).join('')}</ul></div>` : ''}</div>`
+
+    const missingInText = aiNeeds().filter((n) => !has(n.key) && S.points.some((p) => p.ai && p.needs.some((x) => x.key === n.key))).length
+    const openSlots = S.points.filter((p) => pointState(p) === 'slot').length
+    const outsideDone = S.outside.every((o) => o.done)
+    let msg = ''
+    let warn = false
+    if (writing) msg = 'A escrever a resposta… pode demorar cerca de um minuto.'
+    else if (S.genError) { msg = errorMessage(S.genError); warn = true }
+    else if (missingInText > 0) { msg = missingInText === 1 ? 'Falta 1 informação no texto, entre [ ].' : `Faltam ${missingInText} informações no texto, entre [ ].`; warn = true }
+    else if (openSlots > 0) msg = openSlots === 1 ? 'Escreva a sua parte no espaço marcado no texto.' : `Escreva a sua parte nos ${openSlots} espaços marcados no texto.`
+    else if (doneCount === S.points.length && S.points.length) msg = outsideDone ? 'Tudo tratado. Envie quando quiser.' : 'Resposta tratada. Falta a tarefa fora do email.'
+
+    // One obvious next step; everything else lives under "Mais".
+    const more = [
+      regenerable.length ? '<button class="menu-item" data-a="regenerate">Escrever outra versão</button>' : '',
+      wroteSomething ? '<button class="menu-item" data-a="removeAI">Retirar o texto do assistente</button>' : ''
+    ].join('')
+    const buttons = writing
+      ? '<button class="btn-secondary" data-a="cancelWriting">Cancelar</button>'
+      : S.genError && canGenerate
+      ? '<button class="btn-primary" data-a="retryGenerate">Tentar outra vez</button>'
+      : (toWrite.length && canGenerate ? `<button class="btn-primary" data-a="generate">${SPARK(15)} ${wroteSomething ? 'Escrever o que falta' : 'Escrever a resposta'}</button>` : '') +
+        (more ? `<button class="btn-more" data-a="toggleMore" aria-expanded="${!!S.moreOpen}" aria-haspopup="true">Mais ${ICON('chevron', 14)}</button>` : '')
+
+    h += `<div class="panel-foot">${S.moreOpen && !writing ? `<div class="menu ${moreOpening ? 'opening' : ''}" role="menu">${more}</div>` : ''}
+      ${msg ? `<span class="message ${warn ? 'warn' : ''}" role="status">${msg}</span>` : ''}<div class="row">${buttons}</div></div></aside>`
+    return h
+  }
+
+  // The values the assistant could not find, for its own points, once each
+  // (keys are shared across points). They fill its text and are never sent to
+  // the model (only to the study log, redacted, with consent).
+  function aiNeeds() {
+    const seen = new Map()
+    for (const p of S.points) {
+      if (p.owner !== 'ai') continue
+      for (const n of p.needs) {
+        // A shared key keeps the first step's question and label; its options
+        // are grounded per step, so merge them (by value, at most 3).
+        const card = seen.get(n.key)
+        if (!card) { seen.set(n.key, { ...n, options: [...n.options] }); continue }
+        for (const o of n.options) {
+          const same = (x) => x.value.trim().toLowerCase() === o.value.trim().toLowerCase()
+          if (card.options.length < 3 && !card.options.some(same)) card.options.push(o)
+        }
+      }
+    }
+    return [...seen.values()]
+  }
+
+  // "Falta saber" (REDESIGN_PLAN.md Round 2): one card per missing value,
+  // with the question first, where the value goes (the steps that use it,
+  // and once written, the sentence in the email around its blank), options
+  // found in the sources if any, and the field. Most cards have no options.
+  function renderNeeds() {
+    const needs = aiNeeds()
+    if (!needs.length) return ''
+    const missing = needs.filter((n) => !has(n.key)).length
+    return `<div class="needs">
+      <div class="section-head"><strong>Falta saber</strong><span>${missing ? `${missing} por preencher` : 'Tudo preenchido'}</span></div>
+      <span class="hint">Não encontrei isto. Preencha ou deixe em branco: fica entre [ ] no texto.</span>
+      ${needs.map(renderNeed).join('')}
+    </div>`
+  }
+
+  const INPUT_MODE = { email: 'email', number: 'numeric', url: 'url', date: 'text', text: 'text' }
+
+  function renderNeed(n) {
+    const users = S.points.filter((p) => p.owner === 'ai' && p.needs.some((x) => x.key === n.key))
+    const first = users[0]
+    const value = (S.values[n.key] || '').trim()
+    const steps = users.map((p) => `<span class="pnum sm" style="${stepVars(p.id)}">${S.points.indexOf(p) + 1}</span>`).join('')
+    const sentence = users.map((p) => sentenceAround(p, n)).find(Boolean)
+    const where = sentence
+      ? `${steps}<span class="need-sentence">${sentence}</span>`
+      : `<span>${users.length > 1 ? 'Usado nos passos' : 'Usado no passo'}</span>${steps}`
+    // Options found in the sources drop down from the field, like browser
+    // autocomplete, while it is focused and empty, so they take no space of
+    // their own. A small pill inside the empty field says they exist.
+    const count = n.options.length
+    const pill = count && !value
+      ? `<button class="sugg-pill" data-a="focusNeed" data-key="${n.key}" tabindex="-1" aria-label="Ver sugestões">${count === 1 ? '1 sugestão' : `${count} sugestões`} ${ICON('chevron', 12)}</button>`
+      : ''
+    const menu = count
+      ? `<div class="sugg-menu" role="listbox" aria-label="Sugestões encontradas">${n.options.map((o) => `<button class="sugg" role="option" data-a="pickOption" data-key="${n.key}" data-value="${esc(o.value)}"><span>${esc(o.value)}</span><span class="sugg-src ${o.timeSensitive ? 'warn' : ''}">${o.timeSensitive ? 'pode estar desatualizado · ' : ''}de uma resposta anterior</span></button>`).join('')}</div>`
+      : ''
+    const located = first && blocks.has(first.id)
+    return `<div class="need ${value ? 'filled' : ''}" data-need="${n.key}" data-owner="${first ? first.id : ''}">
+      <label class="need-q" for="need-${n.key}">${esc(n.question)}</label>
+      <div class="need-where">${where}${located ? `<button class="link" data-a="showInEmail" data-id="${first.id}">ver no email</button>` : ''}</div>
+      <div class="need-field ${value ? 'has-value' : ''} ${pill ? 'has-pill' : ''}">
+        <textarea id="need-${n.key}" class="need-input ${value ? 'filled' : ''}" rows="1" inputmode="${INPUT_MODE[n.type]}" placeholder="${esc(n.hint || 'não encontrei')}" data-key="${n.key}" autocomplete="off">${esc(S.values[n.key] || '')}</textarea>
+        ${pill}${menu}
+      </div>
+    </div>`
+  }
+
+  // The sentence in the email around this value's blank, once the
+  // assistant has written the step: "…pode pedir novos dados através de [ ].".
+  function sentenceAround(point, need) {
+    const b = blocks.get(point.id)
+    if (!b || b.kind !== 'ai' || !b.segments) return ''
+    const i = b.segments.findIndex((s) => s.slot === need.key)
+    if (i < 0) return ''
+    const text = (segs) => segs.map((s) => s.slot ? (has(s.slot) ? fill(s.slot) : placeholder(point, s.slot)) : (s.text || '')).join('')
+    const before = text(b.segments.slice(0, i)).replace(/\s+/g, ' ')
+    const after = text(b.segments.slice(i + 1)).replace(/\s+/g, ' ')
+    const head = before.length > 48 ? `…${before.slice(-48).replace(/^\S*\s/, '')}` : before
+    const tail = after.length > 32 ? `${after.slice(0, 32).replace(/\s\S*$/, '')}…` : after
+    const blank = has(need.key) ? fill(need.key) : `[${need.label}]`
+    return `«${esc(head)}<mark>${esc(blank)}</mark>${esc(tail)}»`
+  }
+
+  // Where a point is at. Shown, never clicked. The assistant's points are done
+  // once written (no confirmation step) unless values are still missing; the
+  // person's points are done once they type in their slot (or mark it).
+  function pointState(p) {
+    if (p.writing) return 'writing'
+    if (p.owner === 'ai' && !p.done && p.needs.some((n) => !has(n.key))) return 'ask'
+    if (p.ai || p.done) return 'done'
+    const b = blocks.get(p.id)
+    if (b && b.kind === 'slot' && b.el.isConnected) return 'slot'
+    return 'todo'
+  }
+
+  const STATE_ICON = {
+    todo: '<span class="dot"></span>',
+    writing: '<span class="spin"></span>',
+    ask: ICON('question', 18),
+    slot: '<span class="ring"></span>',
+    done: ICON('check', 18)
+  }
+  const STATE_LABEL = { todo: 'Por fazer', writing: 'A escrever', ask: 'Falta informação', slot: 'À espera do seu texto', done: 'Feito' }
+
+  const actionButton = (action, label, title, id, kind, primary) =>
+    `<button class="act ${primary ? 'primary' : ''}" data-a="${action}" data-id="${id}" data-kind="${kind}" aria-label="${label} «${esc(title)}»">${label}</button>`
+
+  // One line per point; details open on click.
+  function renderPoint(p) {
+    const state = pointState(p)
+    const isAI = p.owner === 'ai'
+    const open = S.openIds.includes(p.id)
+    const owner = isAI ? 'Fica para o assistente' : 'Fica para si'
+    return `<li class="row-item ${open ? 'open' : ''} ${openingIds.includes(p.id) ? 'opening' : ''} ${hoverId === p.id ? 'hl' : ''}" data-pid="${p.id}" style="${stepVars(p.id)};--i:${S.points.indexOf(p)}">
+      <button class="row-head" data-a="toggleRow" data-id="${p.id}" aria-expanded="${open}">
+        <span class="state ${state}" role="img" aria-label="${STATE_LABEL[state]}">${STATE_ICON[state]}</span>
+        <span class="pnum" aria-hidden="true">${S.points.indexOf(p) + 1}</span>
+        <span class="row-text"><span class="row-title ${state === 'done' ? 'done' : ''}">${esc(p.title)}</span>${p.desc ? `<span class="row-sub">${esc(p.desc)}</span>` : ''}</span>
+        <span class="row-owner ${isAI ? 'ai' : ''} tip-end" data-tip="${owner}">${ICON(isAI ? 'robot' : 'user', 15)}</span>
+        <span class="chev" aria-hidden="true">${ICON('chevron', 14)}</span>
+      </button>
+      ${open ? renderPointBody(p, state) : ''}
+    </li>`
+  }
+
+  function renderPointBody(p, state) {
+    const isAI = p.owner === 'ai'
+    const locked = p.ai || p.writing
+    const missing = p.needs.filter((n) => !has(n.key))
+    let out = ''
+    let action = ''
+    if (state === 'writing') out = 'A escrever…'
+    else if (isAI && state === 'ask') out = p.ai ? 'Escrito pelo assistente · falta informação em «Falta saber»' : 'Fica para o assistente · falta informação em «Falta saber»'
+    else if (isAI) out = p.ai ? 'Escrito pelo assistente' : 'Fica para o assistente'
+    else if (state === 'slot') out = 'Escreva no espaço marcado no texto'
+    else if (state === 'done') {
+      const b = blocks.get(p.id)
+      out = 'Tratado por si'
+      if (!(b && b.kind === 'slot' && b.el.isConnected)) action = actionButton('undoDone', 'Desfazer', p.title, p.id, 'point')
+    } else {
+      out = 'Fica para si'
+      action = actionButton('markDone', 'Marcar como feito', p.title, p.id, 'point')
+    }
+    if (!isAI && missing.length && state !== 'done') out += ` · não encontrei: ${missing.map((n) => esc(n.label)).join(', ')}`
+    return `<div class="row-body">
+      ${renderSources(p)}
+      <div class="seg" role="group" aria-label="Quem escreve «${esc(p.title)}»" ${locked ? `title="Retire o texto do assistente para mudar"` : ''}>
+        <button data-a="setOwner" data-owner="user" data-id="${p.id}" aria-pressed="${!isAI}" ${locked ? 'disabled' : ''}>${ICON('user', 15)} Eu</button>
+        <button data-a="setOwner" data-owner="ai" data-id="${p.id}" aria-pressed="${isAI}" ${locked ? 'disabled' : ''}>${ICON('robot', 15)} Assistente</button>
+      </div>
+      <div class="out"><span>↳ ${out}</span>${action}</div>
+    </div>`
+  }
+
+  // Editing the plan in place: each step's title and description become
+  // fields, with ⊖ to delete it, and an empty last line with ⊕ to add one.
+  // Changes apply as they are typed; "Anular" restores the plan as it was.
+  function renderPointEdit(p) {
+    const n = S.points.indexOf(p) + 1
+    return `<li class="row-item editing" data-pid="${p.id}" style="${stepVars(p.id)};--i:${S.points.indexOf(p)}">
+      <div class="row-head static">
+        <span class="pnum" aria-hidden="true">${n}</span>
+        <span class="edit-fields">
+          <input id="et-${p.id}" class="edit-title" value="${esc(p.title)}" placeholder="Título do passo" aria-label="Título do passo ${n}" data-edit-field="title" data-id="${p.id}">
+          <textarea id="ed-${p.id}" class="edit-desc" rows="2" placeholder="O que a resposta deve fazer" aria-label="Descrição do passo ${n}" data-edit-field="desc" data-id="${p.id}">${esc(p.desc)}</textarea>
+        </span>
+        <button class="icon-btn tip-end" data-a="removePoint" data-id="${p.id}" aria-label="Apagar «${esc(p.title)}»" data-tip="Apagar passo">${ICON('remove', 22)}</button>
+      </div>
+    </li>`
+  }
+
+  function renderNewStep() {
+    return `<li class="row-item editing" style="--i:${S.points.length}">
+      <form class="row-head static" data-form="add">
+        <span class="pnum ghost" aria-hidden="true">${S.points.length + 1}</span>
+        <span class="edit-fields">
+          <input id="new-step" class="edit-title" value="${esc(S.newText)}" placeholder="Novo passo, ex.: Contacto" aria-label="Título do novo passo" data-new="title">
+          <textarea id="new-step-desc" class="edit-desc" rows="2" placeholder="O que a resposta deve fazer, ex.: indicar a quem contactar" aria-label="Descrição do novo passo" data-new="desc">${esc(S.newDesc)}</textarea>
+        </span>
+        <button class="icon-btn add tip-end" type="submit" aria-label="Acrescentar passo" data-tip="Acrescentar passo">${ICON('add', 22)}</button>
+      </form>
+    </li>`
+  }
+
+  // Where a point came from (REDESIGN_PLAN.md E5), so people can judge it:
+  // the past answers it rests on, in the staff's own words. A point for the
+  // assistant with no source says so plainly.
+  // Escapes an excerpt and highlights the option values taken from it, so the
+  // person sees each option in its original context.
+  function markValues(text, values) {
+    const lower = text.toLowerCase()
+    let best = null
+    for (const v of values) {
+      const i = lower.indexOf(v.trim().toLowerCase())
+      if (i >= 0 && v.trim() && (!best || i < best.i)) best = { i, len: v.trim().length }
+    }
+    if (!best) return esc(text)
+    return esc(text.slice(0, best.i)) + `<mark>${esc(text.slice(best.i, best.i + best.len))}</mark>` +
+      markValues(text.slice(best.i + best.len), values)
+  }
+
+  function renderSources(p) {
+    const found = (p.sourceIds || []).map((id) => (S.sourceDetails || []).find((s) => s.id === id)).filter(Boolean)
+    if (!found.length) return p.owner === 'ai' ? '<span class="srcs-none">Não encontrei uma resposta anterior sobre isto.</span>' : ''
+    const when = (d) => {
+      const date = new Date(d)
+      return isNaN(date) ? '' : ` · ${date.toLocaleDateString('pt-PT', { month: 'short', year: 'numeric' })}`
+    }
+    return `<div class="srcs"><span class="srcs-head">Com base em ${found.length === 1 ? 'uma resposta anterior' : `${found.length} respostas anteriores`}:</span>
+      ${found.map((s) => `<figure class="src"><figcaption>«${esc(s.question)}»${s.date ? when(s.date) : ''}</figcaption><blockquote>${markValues(s.excerpt, p.needs.flatMap((n) => n.options.filter((o) => o.sourceId === s.id).map((o) => o.value)))}</blockquote></figure>`).join('')}
+    </div>`
+  }
+
+  // Tasks outside the email are always the person's: no owner, no AI.
+  function renderOutside(o) {
+    const state = o.done ? 'done' : 'todo'
+    return `<li class="row-item">
+      <div class="row-head static">
+        <span class="state ${state}" role="img" aria-label="${STATE_LABEL[state]}">${STATE_ICON[state]}</span>
+        <span class="row-title plain ${o.done ? 'done' : ''}">${esc(o.text)}</span>
+        ${o.done ? actionButton('undoDone', 'Desfazer', o.text, o.id, 'outside') : actionButton('markDone', 'Feito', o.text, o.id, 'outside')}
+      </div>
+    </li>`
+  }
+
+  function updateItem(el, patch) {
+    const key = el.dataset.kind === 'outside' ? 'outside' : 'points'
+    set({ [key]: S[key].map((x) => x.id === el.dataset.id ? { ...x, ...(typeof patch === 'function' ? patch(x) : patch) } : x) })
+  }
+
+  // --- The assistant's text in the email -------------------------------------
+  // Each paragraph is a plain <div> in Gmail's editable body (one per point,
+  // then an empty line), remembered with the text it was last written with.
+  // While that text is unchanged the paragraph is the assistant's: values are
+  // refilled and "Gerar outra versão" replaces it. Once the person edits it,
+  // it is theirs: only its still-empty [placeholders] are filled in
+  // (HANDOFF.md section 3 and open issue 6). Values are never sent to the
+  // model; only the study log carries them, redacted, and only with consent.
+  const blocks = new Map() // point id → { point, el, gap, segments, rendered }
+  let frame = [] // greeting, thanks and sign-off lines: { el, rendered }
+  let sent = null // the redacted thread and ticket sent to /list, reused for /generate
+  let requester = '' // for the greeting; never sent
+
+  const norm = (s) => s.replace(/\s+/g, ' ').trim()
+  const untouched = (b) => b.el.isConnected && norm(b.el.textContent) === norm(b.rendered)
+
+  function lineDiv(text) {
+    const div = document.createElement('div')
+    if (text) div.textContent = text
+    else div.appendChild(document.createElement('br'))
+    return div
+  }
+
+  const placeholder = (point, key) => {
+    const need = point.needs.find((n) => n.key === key)
+    return `[${need ? need.label : key}]`
+  }
+  const paragraphText = (point, segments) => segments
+    .map((s) => s.slot ? (has(s.slot) ? fill(s.slot) : placeholder(point, s.slot)) : (s.text || ''))
+    .join('')
+
+  // Gmail's signature or quoted text, or our own sign-off: text goes above it.
+  function tailAnchor() {
+    const signoff = frame.find((f) => f.signoff && f.el.isConnected)
+    if (signoff) return signoff.el
+    return [...replyBox.children].find((c) => c.matches(GMAIL_TAIL) || c.querySelector(GMAIL_TAIL)) || null
+  }
+
+  // The next paragraph of a later point, so paragraphs follow the list order.
+  function anchorAfter(pointId) {
+    const ids = S.points.map((p) => p.id)
+    for (const id of ids.slice(ids.indexOf(pointId) + 1)) {
+      const b = blocks.get(id)
+      if (b && b.el.parentNode === replyBox) return b.el
+    }
+    return tailAnchor()
+  }
+
+  function hasOwnText() {
+    const tail = tailAnchor()
+    for (const child of replyBox.children) {
+      if (child === tail) break
+      if (child.textContent.trim()) return true
+    }
+    return false
+  }
+
+  // Greeting and sign-off, only when the reply was empty.
+  function addFrame() {
+    if (frame.length || hasOwnText()) return
+    const signature = [...replyBox.children].some((c) => c.matches(GMAIL_TAIL) || c.querySelector(GMAIL_TAIL))
+    const top = [TEMPLATE.greeting(requester), '', TEMPLATE.thanks, '']
+    const bottom = signature ? [TEMPLATE.signoff[0]] : TEMPLATE.signoff
+    // Gmail starts an empty reply with a blank line; the template replaces it.
+    const tail0 = tailAnchor()
+    for (const child of [...replyBox.children]) {
+      if (child === tail0) break
+      if (!child.textContent.trim() && !child.querySelector('img')) child.remove()
+    }
+    const first = replyBox.firstChild
+    for (const text of top) {
+      const el = lineDiv(text)
+      replyBox.insertBefore(el, first)
+      frame.push({ el, rendered: text })
+    }
+    const tail = tailAnchor()
+    bottom.forEach((text, i) => {
+      const el = lineDiv(text)
+      replyBox.insertBefore(el, tail)
+      frame.push({ el, rendered: text, signoff: i === 0 })
+    })
+  }
+
+  // Writes or replaces a point's paragraph. Returns false if the person has
+  // edited it, in which case it is left alone.
+  function placeParagraph(point, segments) {
+    const text = paragraphText(point, segments)
+    const existing = blocks.get(point.id)
+    if (existing && existing.el.isConnected) {
+      if (!untouched(existing)) return false
+      existing.el.textContent = text
+      Object.assign(existing, { point, kind: 'ai', segments, rendered: text, placedAt: Date.now() })
+      return true
+    }
+    insertBlock(point, { kind: 'ai', segments, rendered: text })
+    return true
+  }
+
+  // A one-line slot where the person writes their own point, at its place in
+  // the plan's order (REDESIGN_PLAN.md E7). Typing in it completes the point.
+  function placeSlot(point) {
+    const existing = blocks.get(point.id)
+    if (existing && existing.el.isConnected) return
+    insertBlock(point, { kind: 'slot', rendered: TEMPLATE.slot(point) })
+  }
+
+  function insertBlock(point, block) {
+    const el = lineDiv(block.rendered)
+    const gap = lineDiv('')
+    const next = anchorAfter(point.id)
+    const before = next && next.parentNode === replyBox ? next : null
+    replyBox.insertBefore(el, before)
+    replyBox.insertBefore(gap, before)
+    blocks.set(point.id, { point, el, gap, placedAt: Date.now(), ...block })
+  }
+
+  // Puts the values typed in the panel into the email.
+  function refillParagraphs() {
+    let changed = false
+    for (const b of blocks.values()) {
+      if (b.kind !== 'ai' || !b.el.isConnected) continue
+      const point = S.points.find((p) => p.id === b.point.id) || b.point
+      if (untouched(b)) {
+        const text = paragraphText(point, b.segments)
+        if (text !== b.rendered) { b.el.textContent = text; b.rendered = text; changed = true }
+        continue
+      }
+      // Edited by the person: only fill placeholders still in the text.
+      for (const s of b.segments) {
+        if (!s.slot || !has(s.slot)) continue
+        const mark = placeholder(point, s.slot)
+        const walker = document.createTreeWalker(b.el, NodeFilter.SHOW_TEXT)
+        for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+          if (node.nodeValue.includes(mark)) { node.nodeValue = node.nodeValue.replace(mark, fill(s.slot)); changed = true }
+        }
+      }
+    }
+    if (changed) tellGmail()
+  }
+
+  // Removes the assistant's paragraphs and the slots the person hasn't
+  // written in; slots with the person's text stay.
+  function removeAssistantText() {
+    for (const [id, b] of [...blocks]) {
+      if (b.kind === 'slot' && b.el.isConnected && !untouched(b)) continue
+      b.el.remove()
+      b.gap.remove()
+      blocks.delete(id)
+    }
+    for (const f of frame) if (untouched(f)) f.el.remove()
+    frame = []
+    tellGmail()
+  }
+
+  // Gmail saves the draft on input events, not on DOM changes.
+  const tellGmail = () => replyBox.dispatchEvent(new Event('input', { bubbles: true }))
+
+  // Keeps the list in step with the email: a deleted paragraph or slot puts
+  // its point back to "to do", and typing in a slot completes the point.
+  function syncWithEmail() {
+    const updates = {}
+    for (const p of S.points) {
+      const b = blocks.get(p.id)
+      if (!b || p.writing) continue
+      if (!b.el.isConnected) {
+        if (b.gap.isConnected && !b.gap.textContent.trim()) b.gap.remove()
+        blocks.delete(p.id)
+        updates[p.id] = b.kind === 'ai' ? { ai: false } : { done: false }
+        log('point_undone', { point: p.id, ai: b.kind === 'ai', via: 'deleted', seconds_since_generated: secondsSince(b) })
+        continue
+      }
+      if (b.kind === 'slot') {
+        const typed = !untouched(b) && norm(b.el.textContent) !== ''
+        if (typed !== !!p.done) {
+          updates[p.id] = { done: typed }
+          log(typed ? 'point_done' : 'point_undone', { point: p.id, ai: false, via: 'slot', seconds_since_generated: secondsSince(b) }, typed ? { text: norm(b.el.textContent) } : null)
+        }
+      }
+    }
+    if (Object.keys(updates).length) set({ points: S.points.map((p) => updates[p.id] ? { ...p, ...updates[p.id] } : p) })
+    else renderSoon()
+  }
+
+  const secondsSince = (b) => b && b.placedAt ? Math.round((Date.now() - b.placedAt) / 1000) : null
+  const sectionText = (id) => { const b = blocks.get(id); return b && b.el.isConnected ? norm(b.el.textContent) : null }
+
+  // Re-render shortly after typing in the email, so icons and counts follow.
+  let renderTimer = null
+  const renderSoon = () => { clearTimeout(renderTimer); renderTimer = setTimeout(render, 300) }
+
+  // What "Escrever a resposta" still has to do: the assistant's points not
+  // yet written, and slots for the person's points that don't have one.
+  function pointsToWrite() {
+    return S.points.filter((p) => {
+      if (p.writing || p.done || p.ai) return false
+      if (p.owner === 'ai') return true
+      const b = blocks.get(p.id)
+      return !(b && b.el.isConnected)
+    })
+  }
+
+  // Lays the reply out in the plan's order: asks /generate for the
+  // assistant's points (if any) and adds slots for the person's. With
+  // `again`, rewrites the assistant's untouched paragraphs, sending them as
+  // `previous` so the backend writes a different version.
+  function writeReply(again) {
+    const aiIds = again ? regenerableIds() : pointsToWrite().filter((p) => p.owner === 'ai').map((p) => p.id)
+    const slotIds = again ? [] : pointsToWrite().filter((p) => p.owner === 'user').map((p) => p.id)
+    if ((!aiIds.length && !slotIds.length) || !sent || !study.generate_enabled) return
+    if (again) log('regenerate_clicked', { points: aiIds })
+    else log('generate_clicked', { points: aiIds, slots: slotIds, n_done_before: S.points.filter((p) => pointState(p) === 'done').length })
+    stopWork()
+    const token = workToken
+    set({ moreOpen: false, genError: null, points: S.points.map((p) => aiIds.includes(p.id) ? { ...p, writing: true } : p) })
+    const asked = S.points.filter((p) => aiIds.includes(p.id))
+
+    const finish = (paragraphs) => {
+      if (token !== workToken) return
+      addFrame()
+      const written = []
+      for (const para of paragraphs) {
+        const point = asked.find((p) => p.id === para.point)
+        if (point && Array.isArray(para.segments) && placeParagraph(point, para.segments) !== false) written.push(point.id)
+      }
+      for (const p of S.points) if (slotIds.includes(p.id)) placeSlot(p)
+      tellGmail()
+      set({ points: S.points.map((p) => aiIds.includes(p.id) ? { ...p, writing: false, ai: p.ai || written.includes(p.id) } : p) })
+    }
+
+    if (!aiIds.length) { finish([]); return }
+    const previous = again
+      ? asked.map((p) => blocks.get(p.id)).filter(Boolean).map((b) => ({ point: b.point.id, segments: b.segments }))
+      : null
+    requestGenerate({
+      ...sent,
+      request_summary: S.request,
+      points: asked.map(({ id, title, desc, needs }) => ({ id, title, desc, needs })),
+      context_points: S.points.filter((p) => !aiIds.includes(p.id)).map(({ id, title, desc }) => ({ id, title, desc })),
+      previous,
+      instruction: null
+    }).then(finish, (err) => {
+      if (token !== workToken) return
+      set({ genError: err, retryAgain: !!again, points: stopWriting() })
+    })
+  }
+
+  const stopWriting = () => S.points.map((p) => p.writing ? { ...p, writing: false } : p)
+
+  // "Escrever outra versão" rewrites the assistant's paragraphs the person
+  // hasn't edited.
+  const regenerableIds = () => S.points
+    .filter((p) => p.ai && blocks.has(p.id) && blocks.get(p.id).kind === 'ai' && untouched(blocks.get(p.id)))
+    .map((p) => p.id)
+
+  // [placeholders] and untouched slots still in the email.
+  function pendingInEmail() {
+    let n = 0
+    for (const b of blocks.values()) {
+      if (!b.el.isConnected) continue
+      if (b.kind === 'slot') { if (untouched(b)) n++; continue }
+      const point = S.points.find((p) => p.id === b.point.id) || b.point
+      const text = b.el.textContent
+      for (const need of point.needs) if (text.includes(placeholder(point, need.key))) n++
+    }
+    return n
+  }
+
+  // --- Study log (BACKEND_SPEC.md §7) ----------------------------------------
+  // Text goes in each event's third argument ("content"), which logEvent only
+  // keeps for consenting participants, after redacting it.
+  function logDone(el, event) {
+    const id = el.dataset.id
+    if (el.dataset.kind === 'outside') { log(event.replace('point', 'outside'), { item: id }); return }
+    const b = blocks.get(id)
+    log(event, { point: id, ai: !!(b && b.kind === 'ai'), via: 'marked', seconds_since_generated: secondsSince(b) }, { text: sectionText(id) })
+  }
+
+  // A typed value is logged once the person pauses (VALUE_PAUSE_MS), not on
+  // every key; a picked option at once. Only when it changed since last time.
+  const VALUE_PAUSE_MS = 2000
+  const loggedValues = {}
+  const valueTimers = {}
+  function logValue(key, source) {
+    clearTimeout(valueTimers[key])
+    delete valueTimers[key]
+    const value = (S.values[key] || '').trim()
+    if (value === (loggedValues[key] || '')) return
+    loggedValues[key] = value
+    log('value_entered', { key, source, empty: !value }, { value })
+  }
+  const logValueSoon = (key) => {
+    clearTimeout(valueTimers[key])
+    valueTimers[key] = setTimeout(() => logValue(key, 'typed'), VALUE_PAUSE_MS)
+  }
+
+  // "Concluir" compares the plan with how it was when "Editar" was clicked.
+  function logPlanEdits(before, after) {
+    const old = new Map(before.map((p) => [p.id, p]))
+    const now = new Set(after.map((p) => p.id))
+    let added = 0
+    let deleted = 0
+    let renamed = 0
+    for (const p of after) {
+      const q = old.get(p.id)
+      if (!q) { added++; log('point_added', { point: p.id }, { title: p.title, desc: p.desc }); continue }
+      let changed = false
+      for (const field of ['title', 'desc']) {
+        if ((q[field] || '') === (p[field] || '')) continue
+        changed = true
+        log('point_edited', { point: p.id, field }, { before: q[field] || '', after: p[field] || '' })
+      }
+      if (changed) renamed++
+    }
+    for (const q of before) if (!now.has(q.id)) { deleted++; log('point_deleted', { point: q.id }, { title: q.title, desc: q.desc }) }
+    if (added || deleted || renamed) log('list_edited', { added, deleted, renamed })
+  }
+
+  // The person's reply as it is sent: their text and Gmail's signature, but
+  // not the quoted earlier messages (the backend already has those, redacted).
+  function replyText() {
+    const lines = []
+    for (const child of replyBox.children) {
+      if (child.matches('.gmail_quote')) break
+      const quote = child.querySelector('.gmail_quote')
+      if (!quote) { lines.push(child.innerText); continue }
+      const copy = child.cloneNode(true)
+      copy.querySelectorAll('.gmail_quote').forEach((q) => q.remove())
+      lines.push(copy.textContent)
+      break
+    }
+    return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim()
+  }
+
+  // Clicking Enviar (or Ctrl/⌘+Enter in the reply). Logged once per reply,
+  // with how much the person changed each of the assistant's paragraphs.
+  // Detecting the click never delays or blocks sending.
+  let replyLogged = false
+  function logReplySent(how) {
+    if (replyLogged) return
+    replyLogged = true
+    for (const key of Object.keys(valueTimers)) logValue(key, 'typed')
+    const distance = {}
+    const aiText = {}
+    const finalText = {}
+    for (const [id, b] of blocks) {
+      const now = b.el.isConnected ? norm(b.el.textContent) : ''
+      finalText[id] = now
+      if (b.kind !== 'ai') continue
+      aiText[id] = norm(b.rendered)
+      distance[id] = editDistance(aiText[id], now)
+    }
+    log('reply_sent', { how, had_list: S.hadList, edit_distance_per_point: distance, placeholders_left: pendingInEmail() },
+      { ai_text: aiText, final_text: finalText, final_reply: replyText() })
+    flushLog()
+  }
+
+  const actions = {
+    // Explicit click (or the opt-in "Preparar sempre"): the only point where
+    // the thread is read and sent.
+    askList: () => {
+      log('list_requested')
+      loadStudyConfig().then(render)
+      runWork(STEPS_LIST, requestList(replyBox), (result) => {
+        sent = result.sent
+        requester = result.requester
+        const list = normalizeList(result.list)
+        log('list_shown', { n_points: list.points.length, n_needs: new Set(list.points.flatMap((p) => p.needs.map((n) => n.key))).size })
+        return { view: 'list', hadList: true, ...list, values: {}, stepsOpen: false, genError: null, openIds: [], moreOpen: false }
+      }, 'askList')
+    },
+    decline: () => { log('assistant_declined'); leaveThen({ view: 'declined' }) },
+    reopen: () => {
+      log('assistant_reopened')
+      loadStudyConfig().then(render)
+      set({ view: S.hadList ? 'list' : 'ready' })
+    },
+    hide: () => { log('panel_hidden'); stopWork(); leaveThen({ view: 'declined', points: stopWriting(), moreOpen: false }) },
+    cancel: () => { stopWork(); set({ view: S.hadList ? 'list' : 'ready', error: null }) },
+    retry: () => S.retry && actions[S.retry](),
+    openHelp: () => { log('guide_opened'); showGuide() },
+    toggleSteps: () => { if (!S.stepsOpen) log('steps_expanded'); set({ stepsOpen: !S.stepsOpen }) },
+    toggleRow: (el) => {
+      const id = el.dataset.id
+      if (S.openIds.includes(id)) {
+        foldThen(id, () => { keepInPlace = id; set({ openIds: S.openIds.filter((x) => x !== id) }) })
+        return
+      }
+      keepInPlace = id
+      set({ openIds: [...S.openIds, id] })
+      scrollToSection(id)
+    },
+    toggleMore: () => S.moreOpen ? closeMenuThen(() => set({ moreOpen: false })) : set({ moreOpen: true }),
+    setOwner: (el) => {
+      const p = S.points.find((x) => x.id === el.dataset.id)
+      if (p && p.owner !== el.dataset.owner) log('owner_changed', { point: p.id, to: el.dataset.owner, suggested: p.suggested })
+      keepInPlace = el.dataset.id
+      updateItem(el, { owner: el.dataset.owner })
+    },
+    // An option found in the sources fills the field (and the email); it can
+    // still be edited. Clicking the chosen one again clears it.
+    // A suggestion fills the field (and the email) and the list closes,
+    // since it only shows while the field is empty; clear it to see it again.
+    pickOption: (el) => {
+      set({ values: { ...S.values, [el.dataset.key]: el.dataset.value } })
+      refillParagraphs()
+      logValue(el.dataset.key, 'option')
+    },
+    focusNeed: (el) => { const field = root.getElementById(`need-${el.dataset.key}`); if (field) field.focus() },
+    showInEmail: (el) => { scrollToSection(el.dataset.id); setHover(el.dataset.id) },
+    markDone: (el) => { logDone(el, 'point_done'); keepInPlace = el.dataset.id; updateItem(el, { done: true }) },
+    undoDone: (el) => { logDone(el, 'point_undone'); keepInPlace = el.dataset.id; updateItem(el, { done: false }) },
+    generate: () => writeReply(false),
+    regenerate: () => writeReply(true),
+    retryGenerate: () => writeReply(S.retryAgain),
+    cancelWriting: () => { stopWork(); set({ points: stopWriting() }) },
+    removeAI: () => {
+      log('ai_text_removed', { points: S.points.filter((p) => p.ai).map((p) => p.id) })
+      removeAssistantText()
+      set({ moreOpen: false, points: S.points.map((p) => p.ai ? { ...p, ai: false } : p) })
+      syncWithEmail()
+    },
+    startEdit: () => set({ editing: true, snapshot: S.points, newText: '', newDesc: '', moreOpen: false }),
+    finishEdit: () => { logPlanEdits(S.snapshot || [], S.points); set({ editing: false, newText: '', newDesc: '' }) },
+    // Restores the plan's text. A deleted step's section can't come back to
+    // the email, so a restored step without one is "not written" again.
+    cancelEdit: () => set({
+      editing: false,
+      newText: '',
+      newDesc: '',
+      points: (S.snapshot || S.points).map((p) => blocks.has(p.id) ? p : { ...p, ai: false, done: p.ai ? false : p.done })
+    }),
+    // Deleting a step also removes its section from the email, but only if
+    // it is untouched (the assistant's text as written, or an empty slot).
+    removePoint: (el) => {
+      const id = el.dataset.id
+      const b = blocks.get(id)
+      if (b) {
+        if (b.el.isConnected && untouched(b)) {
+          b.el.remove()
+          if (b.gap.isConnected && !b.gap.textContent.trim()) b.gap.remove()
+        }
+        blocks.delete(id)
+      }
+      set({ points: S.points.filter((p) => p.id !== id), openIds: S.openIds.filter((x) => x !== id) })
+      if (b) tellGmail()
+    }
+  }
+
+  root.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-a]')
+    if (!el || el.tagName === 'INPUT') return
+    if (actions[el.dataset.a]) actions[el.dataset.a](el)
+  })
+  root.addEventListener('input', (e) => {
+    const t = e.target
+    if (t.dataset.key) {
+      set({ values: { ...S.values, [t.dataset.key]: t.value } })
+      refillParagraphs()
+      logValueSoon(t.dataset.key)
+    }
+    else if (t.dataset.editField) {
+      set({ points: S.points.map((p) => p.id === t.dataset.id ? { ...p, [t.dataset.editField]: t.value } : p) })
+    } else if (t.dataset.new) set({ [t.dataset.new === 'desc' ? 'newDesc' : 'newText']: t.value })
+  })
+  // A new step starts as the person's. If only the description was filled
+  // in, its first words become the title.
+  root.addEventListener('submit', (e) => {
+    e.preventDefault()
+    const desc = S.newDesc.trim()
+    const title = S.newText.trim() || desc.split(/\s+/).slice(0, 4).join(' ').replace(/[.,;:]+$/, '')
+    if (!title) return
+    set({ newText: '', newDesc: '', points: S.points.concat([{ id: 'n' + Date.now(), title, desc, needs: [], owner: 'user', suggested: null, sourceIds: [], done: false, ai: false, writing: false }]) })
+  })
+
+  // Typing in the reply collapses the ready bar into "Mostrar assistente".
+  replyBox.addEventListener('input', () => {
+    if (S.view === 'ready') leaveThen({ view: 'declined' })
+    else syncWithEmail()
+  })
+
+  // Open issue 9: a reminder next to Gmail's Enviar while [placeholders] or
+  // untouched slots remain. It never blocks sending: it only shows while the
+  // button is hovered or focused, and nothing stops the click.
+  let tip = null
+  function sendButtonFrom(el) {
+    const btn = el && el.closest && el.closest('[role="button"][data-tooltip]')
+    if (!btn || !/^(Enviar|Send)\b/.test(btn.getAttribute('data-tooltip') || '')) return null
+    const thread = findThreadView(replyBox)
+    return thread && thread.contains(btn) ? btn : null
+  }
+  function showTip(btn) {
+    const n = pendingInEmail()
+    if (!n) return
+    if (!tip) {
+      tip = document.createElement('div')
+      tip.dataset.dalmHost = ''
+      tip.style.pointerEvents = 'none'
+      tip.attachShadow({ mode: 'open' })
+      document.body.appendChild(tip)
+    }
+    tip.shadowRoot.innerHTML = `<style>${UI_CSS}</style><div class="root enter"><div class="send-tip" role="status">${ICON('question', 16)}<span>${n === 1 ? 'O texto ainda tem 1 espaço por preencher entre [ ].' : `O texto ainda tem ${n} espaços por preencher entre [ ].`}</span></div></div>`
+    const r = btn.getBoundingClientRect()
+    tip.style.display = ''
+    tip.style.left = `${Math.max(EDGE, r.left)}px`
+    tip.style.top = `${Math.max(EDGE, r.top - 52)}px`
+  }
+  const hideTip = () => { if (tip) tip.style.display = 'none' }
+  const onOver = (e) => { const btn = sendButtonFrom(e.target); if (btn) showTip(btn) }
+  const onOut = (e) => { const btn = sendButtonFrom(e.target); if (btn && !btn.contains(e.relatedTarget)) hideTip() }
+  document.addEventListener('mouseover', onOver, true)
+  document.addEventListener('mouseout', onOut, true)
+  document.addEventListener('focusin', onOver, true)
+  document.addEventListener('focusout', hideTip, true)
+
+  // Sending, for the study log. Capture phase, so it runs before Gmail
+  // removes the reply; it never stops or delays the send.
+  const onSendClick = (e) => { if (sendButtonFrom(e.target)) logReplySent('click') }
+  const onSendKey = (e) => {
+    if ((e.key === 'Enter' || e.key === ' ') && sendButtonFrom(e.target)) logReplySent('button_key')
+    else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && replyBox.contains(e.target)) logReplySent('shortcut')
+  }
+  document.addEventListener('click', onSendClick, true)
+  document.addEventListener('keydown', onSendKey, true)
+
+  // Follow the reply as the conversation scrolls or the window resizes.
+  window.addEventListener('scroll', schedulePosition, true)
+  window.addEventListener('resize', schedulePosition)
+  const resizeObserver = new ResizeObserver(schedulePosition)
+  resizeObserver.observe(replyBox)
+
+  // Gmail removes the reply box when it's closed or sent; poll for that since
+  // there's no reliable event for it. The poll also catches Gmail hiding the
+  // reply (e.g. switching to another conversation) without removing it.
+  const cleanupInterval = setInterval(() => {
+    if (replyBox.isConnected) { position(); return }
+    clearTimeout(timer)
+    clearInterval(cleanupInterval)
+    resizeObserver.disconnect()
+    window.removeEventListener('scroll', schedulePosition, true)
+    window.removeEventListener('resize', schedulePosition)
+    document.removeEventListener('mouseover', onOver, true)
+    document.removeEventListener('mouseout', onOut, true)
+    document.removeEventListener('focusin', onOver, true)
+    document.removeEventListener('focusout', hideTip, true)
+    document.removeEventListener('click', onSendClick, true)
+    document.removeEventListener('keydown', onSendKey, true)
+    flushLog()
+    if (tip) tip.remove()
+    marks.remove()
+    host.remove()
+  }, 1000)
+
+  render()
+  if (!prefs.guideSeen) showGuide()
+  if (prefs.prepareAlways) actions.askList()
+  else log('bar_shown')
+}
+
+async function attachToReplyBox(replyBox) {
+  if (replyBox.dataset.dalmAttached) return
+  // The assistant lives only in inline replies to an open thread.
+  if (!findThreadView(replyBox)) return
+  replyBox.dataset.dalmAttached = 'true'
+  injectPageStyles()
+  await prefsReady
+  if (replyBox.isConnected) createAssistant(replyBox)
+}
+
+// Watch for Gmail reply boxes being added to the DOM
+const observer = new MutationObserver(() => {
+  // An orphaned copy (see extensionAlive) stops watching; the fresh copy
+  // that Chrome injects when Gmail is reloaded takes over.
+  if (!extensionAlive()) { observer.disconnect(); return }
+  document.querySelectorAll('div[role="textbox"][aria-label]')
+    .forEach(attachToReplyBox)
+})
+
+observer.observe(document.body, { childList: true, subtree: true })

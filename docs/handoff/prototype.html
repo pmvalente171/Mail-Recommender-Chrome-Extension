@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="pt">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Assistente DALM · protótipo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700&display=swap">
+<style>
+/*
+  Assistente DALM: clickable prototype of the Gmail extension UI.
+  The Gmail screenshot is a static background. Everything the extension draws is absolutely
+  positioned on top of it, in the coordinates of a 1440 x 1358 frame.
+  Tokens below are the design's colours; reuse them in the real extension.
+*/
+:root{
+  --green-900:#173F33; --green-700:#1F5C4A; --green-600:#2F8A63; --green-400:#5E8F7E; --green-300:#8FB3A3;
+  --green-200:#A9C9BB; --green-100:#EAF3EF; --green-50:#F2F7F4; --panel-line:#E3EBE7; --panel-border:#C9D8D0;
+  --ink:#1E2421; --ink-2:#3D4F48; --ink-3:#5F6F68; --ink-4:#80868B;
+  --amber-bg:#FBE7A1; --amber-line:#B8921C; --amber-ink:#5A4400; --amber-text:#6B4E00; --amber-field:#FFFBEF; --amber-field-line:#E2C76E;
+  --danger-line:#E3B4B4; --danger-ink:#8A2C2C;
+  --font-ui:'Public Sans','Helvetica Neue',Arial,sans-serif;
+  --font-mail:Arial,Helvetica,sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:#E9ECEB;font-family:var(--font-ui);color:var(--ink)}
+.devbar{display:flex;flex-wrap:wrap;gap:6px;align-items:center;padding:10px 16px;background:#22302B;color:#E6EEEA;font-size:13px}
+.devbar strong{margin-right:6px}
+.devbar button{font:inherit;font-size:12.5px;padding:6px 10px;border-radius:6px;border:1px solid #4A5E56;background:#2E3D37;color:#E6EEEA;cursor:pointer}
+.devbar button:hover{background:#3A4C45}
+.stage{overflow:auto;padding:16px}
+.frame{position:relative;width:1440px;height:1358px;margin:0 auto;overflow:hidden;background:#F8FAFD;box-shadow:0 2px 12px rgba(0,0,0,.15)}
+.frame > img{position:absolute;left:0;top:0;width:1440px;height:1358px;display:block}
+button{font-family:inherit;cursor:pointer}
+:focus-visible{outline:3px solid #2F6FD0;outline-offset:2px}
+
+.btn-primary{font-size:14.5px;font-weight:600;padding:0 22px;min-height:44px;border-radius:22px;border:0;background:var(--green-700);color:#fff;display:inline-flex;align-items:center;gap:8px}
+.btn-secondary{font-size:13.5px;font-weight:600;padding:0 16px;min-height:40px;border-radius:20px;border:1px solid var(--green-300);background:#fff;color:var(--green-700)}
+.btn-quiet{font-size:14.5px;font-weight:600;padding:0 16px;min-height:44px;border-radius:22px;border:0;background:transparent;color:var(--ink-2)}
+.link{font-size:12.5px;font-weight:600;padding:0 6px;min-height:30px;border:0;background:transparent;color:var(--green-700);text-decoration:underline}
+.link.muted{color:var(--ink-2)}
+
+.bar{position:absolute;left:405px;top:528px;width:968px;display:flex;flex-direction:column;gap:14px}
+.bar-card{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:14px 16px;background:var(--green-50);border:1px solid var(--green-200);border-radius:12px}
+.badge{flex:0 0 auto;width:34px;height:34px;border-radius:50%;background:var(--green-700);color:#fff;display:flex;align-items:center;justify-content:center}
+.badge.sm{width:24px;height:24px}
+.bar-text{flex:1 1 320px;min-width:0;display:flex;flex-direction:column;gap:2px}
+.bar-text strong{font-size:15px;color:var(--green-900)}
+.bar-text span{font-size:13.5px;color:var(--ink-2)}
+.mail-hint{font-family:var(--font-mail);font-size:14px;color:var(--ink-4);padding-left:2px}
+.chip{position:absolute;left:1160px;top:530px;display:inline-flex;align-items:center;gap:8px;font-size:13.5px;font-weight:600;padding:0 16px;min-height:40px;border-radius:20px;border:1px solid var(--green-200);background:var(--green-50);color:var(--green-700)}
+
+.mail{position:absolute;left:407px;top:532px;width:545px;height:600px;overflow:hidden;font-family:var(--font-mail);font-size:14px;line-height:1.55;color:#202124;display:flex;flex-direction:column;gap:12px}
+.mail p{margin:0}
+.mail .placeholder{color:var(--ink-4)}
+.mail .yours{color:var(--ink-4);font-style:italic}
+.slot{background:var(--amber-bg);border-bottom:2px dashed var(--amber-line);padding:0 4px;border-radius:3px;color:var(--amber-ink);font-style:normal}
+
+.panel{position:absolute;left:968px;top:528px;width:406px;height:612px;display:flex;flex-direction:column;background:#fff;border:1px solid var(--panel-border);border-radius:14px;overflow:hidden}
+.panel-head{display:flex;align-items:center;gap:6px;padding:12px 16px;border-bottom:1px solid var(--panel-line)}
+.panel-head strong{flex:1 1 auto;font-size:15px;color:var(--green-900)}
+.panel-body{flex:1 1 auto;overflow-y:auto;padding:14px 18px 10px;display:flex;flex-direction:column;gap:14px}
+.panel-foot{display:flex;flex-direction:column;gap:10px;padding:12px 18px;border-top:1px solid var(--panel-line);background:#F7FAF8}
+.row{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.steps{padding:18px;display:flex;flex-direction:column;gap:12px}
+.step{display:flex;gap:10px;align-items:center;font-size:14.5px}
+.step.pending{color:#A3ADA8}
+.summary{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--ink-3)}
+.summary span{flex:1 1 auto}
+.steplist{margin:0;padding:0 0 0 23px;list-style:none;display:flex;flex-direction:column;gap:3px;font-size:12.5px;color:var(--ink-3)}
+.request{margin:0;font-size:14px;line-height:1.5}
+.section-head{display:flex;align-items:baseline;gap:8px}
+.section-head strong{flex:1 1 auto;font-size:14px}
+.section-head span{font-size:12.5px;font-weight:600;color:var(--ink-2);white-space:nowrap}
+.hint{font-size:12.5px;color:var(--ink-3)}
+.crit{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px}
+.crit li{display:flex;gap:10px;align-items:flex-start;padding:6px;margin:0 -6px;border-radius:10px}
+.crit li.review{background:#EEF6F1}
+.check{flex:0 0 auto;width:26px;height:26px;padding:0;border-radius:50%;border:2px solid #9DB5AA;background:#fff;color:#fff;display:flex;align-items:center;justify-content:center}
+.check.ai{border-color:var(--green-700)}
+.check[aria-checked="true"]{border-color:var(--green-600);background:var(--green-600)}
+.crit-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:5px}
+.crit-text{font-size:14px;line-height:1.45}
+.crit-text.done{color:var(--ink-3)}
+.status{font-size:12px;font-weight:600;color:var(--ink-3)}
+.status.review{color:var(--green-700)}
+.field{display:flex;align-items:center;gap:8px}
+.field label{flex:0 0 auto;width:118px;font-size:12.5px;color:var(--amber-text)}
+.field input,.edit input{flex:1 1 auto;min-width:0;font:inherit;font-size:13.5px;padding:0 10px;min-height:34px;border:1px solid var(--amber-field-line);border-radius:8px;background:var(--amber-field);color:var(--ink)}
+.field input.filled{border-color:#C4CDC8;background:#fff}
+.outside{display:flex;gap:10px;align-items:flex-start}
+.outside span{font-size:14px;line-height:1.45}
+.outside span.done{color:var(--ink-3)}
+.message{font-size:13px;font-weight:600;color:var(--green-700)}
+.message.warn{color:var(--amber-text)}
+.persist{display:flex;align-items:flex-start;gap:8px;font-size:12px;color:var(--ink-3)}
+.persist input{width:15px;height:15px;margin:2px 0 0;accent-color:var(--green-700)}
+.edit{display:flex;gap:6px;align-items:center}
+.edit input{border-color:#C4CDC8;background:#fff;min-height:38px;padding:0 12px}
+.edit input.new{border-style:dashed;border-color:var(--green-300)}
+.btn-danger{flex:0 0 auto;font-size:12.5px;font-weight:600;padding:0 10px;min-height:38px;border-radius:8px;border:1px solid var(--danger-line);background:#fff;color:var(--danger-ink)}
+.btn-add{flex:0 0 auto;font-size:12.5px;font-weight:600;padding:0 12px;min-height:38px;border-radius:8px;border:1px solid var(--green-300);background:#fff;color:var(--green-700)}
+
+.guide{position:absolute;left:520px;top:236px;width:560px;background:#fff;border:1px solid var(--green-200);border-radius:16px;box-shadow:0 12px 32px rgba(23,40,34,.22);padding:20px 22px;display:flex;flex-direction:column;gap:14px}
+.eyebrow{font-size:12px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--green-700)}
+.guide > strong{font-size:19px;line-height:1.25;color:var(--green-900)}
+.guide ol{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:10px;font-size:14.5px}
+.guide li{display:flex;gap:12px;align-items:flex-start}
+.num{flex:0 0 auto;width:24px;height:24px;border-radius:50%;background:var(--green-100);color:var(--green-700);font-weight:700;font-size:13px;display:flex;align-items:center;justify-content:center}
+@media (prefers-reduced-motion: reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+<div class="devbar" aria-label="Saltar para um estado (só no protótipo)">
+  <strong>Protótipo · saltar para:</strong>
+  <button data-preset="intro">1 Primeira vez</button>
+  <button data-preset="ready">2 Quer ajuda?</button>
+  <button data-preset="before">3 Antes de gerar</button>
+  <button data-preset="after">4 Depois de gerar</button>
+  <button data-preset="editing">5 Editar a lista</button>
+  <button data-preset="filled">6 Tudo tratado</button>
+</div>
+<div class="stage"><div class="frame" id="frame"></div></div>
+
+<script>
+/* ---------- Content (in the real extension this comes from the backend) ---------- */
+const LIST = {
+  request: 'um encarregado de educação quer saber se a Licenciatura em Análise e Engenharia de Dados abre vagas em 2026/27 e quais as condições de acesso.',
+  criteria: [
+    { id: 'c2', title: 'Vagas', desc: 'dizer quantas vagas há no concurso de 2026/27.', needs: [{ key: 'vagas', label: 'N.º de vagas' }] },
+    { id: 'c3', title: 'Condições de acesso', desc: 'indicar as provas de ingresso e a nota mínima.', needs: [{ key: 'provas', label: 'Provas de ingresso' }, { key: 'nota', label: 'Nota mínima' }] },
+    { id: 'c4', title: 'Candidatura', desc: 'explicar onde e quando se candidata.', needs: [{ key: 'datas', label: 'Datas da 1.ª fase' }] },
+    { id: 'c5', title: 'Site', desc: 'lamentar que a informação ainda não esteja no nosso site.', needs: [] }
+  ],
+  outside: 'Pedir à equipa do site que publique a página do curso.'
+};
+/* Paragraphs the model would return: plain text segments and named slots. */
+const PARAS = {
+  c2: [{ t: 'No Concurso Nacional de Acesso 2026/27, o curso tem ' }, { k: 'vagas', t: 'n.º de vagas' }, { t: ' vagas.' }],
+  c3: [{ t: 'As provas de ingresso são ' }, { k: 'provas', t: 'provas de ingresso' }, { t: ' e a nota mínima de candidatura é ' }, { k: 'nota', t: 'nota mínima' }, { t: ' valores.' }],
+  c4: [{ t: 'A candidatura é feita no site da DGES, na 1.ª fase, entre ' }, { k: 'datas', t: 'datas da 1.ª fase' }, { t: '.' }],
+  c5: [{ t: 'Lamentamos que a informação ainda não esteja no nosso site. Vamos pedir que seja publicada com brevidade.' }]
+};
+const USER_TEXT = { c5: 'Pedimos desculpa por a informação ainda não estar disponível no nosso site.' };
+/* Example values for the demo states only. They are invented, not real course data. */
+const EXAMPLE_VALUES = { vagas: '30', provas: 'Matemática A', nota: '100', datas: '20 de julho e 4 de agosto' };
+
+/* ---------- State ---------- */
+const freshCrit = () => LIST.criteria.map(c => ({ ...c, done: false, ai: false }));
+const PRESETS = {
+  intro:   () => ({ view: 'ready', guide: true }),
+  ready:   () => ({ view: 'ready' }),
+  before:  () => ({ view: 'list', crit: mark({ c5: [1, 0] }) }),
+  after:   () => ({ view: 'list', crit: mark({ c5: [1, 0], c2: [1, 1], c3: [0, 1], c4: [0, 1] }), values: { vagas: EXAMPLE_VALUES.vagas } }),
+  editing: () => ({ view: 'list', editing: true }),
+  filled:  () => ({ view: 'list', crit: mark({ c5: [1, 0], c2: [1, 1], c3: [1, 1], c4: [1, 1] }), values: { ...EXAMPLE_VALUES }, outsideDone: true, always: true })
+};
+function mark(map) { return freshCrit().map(c => { const v = map[c.id] || [0, 0]; return { ...c, done: !!v[0], ai: !!v[1] }; }); }
+function initial(name) {
+  return Object.assign({ view: 'ready', guide: false, crit: freshCrit(), values: {}, editing: false, snapshot: null, newText: '',
+    always: false, outsideDone: false, stepTexts: [], stepIdx: 0, stepsOpen: false, hadList: false }, PRESETS[name]());
+}
+let S = initial('intro');
+let timer = null;
+function set(patch) { S = Object.assign({}, S, typeof patch === 'function' ? patch(S) : patch); render(); }
+function log(event, data) { console.log('[log]', event, data || {}); } // stand-in for the study logger
+
+/* ---------- Helpers ---------- */
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const has = k => !!(S.values[k] || '').trim();
+const SPARK = s => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l1.8 4.7 4.7 1.8-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8z"/></svg>`;
+const TICK = (s, color, w) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`;
+
+function runSteps(texts, after) {
+  clearTimeout(timer);
+  set({ view: 'working', stepTexts: texts, stepIdx: 0, editing: false });
+  const tick = i => { timer = setTimeout(() => { if (i >= texts.length) { set(after); return; } set({ stepIdx: i }); tick(i + 1); }, 650); };
+  tick(1);
+}
+
+/* ---------- Render ---------- */
+function render() {
+  const f = document.getElementById('frame');
+  const active = document.activeElement && document.activeElement.id ? { id: document.activeElement.id, pos: document.activeElement.selectionStart } : null;
+  let h = '<img src="assets/gmail-base.png" alt="Gmail com o email de um encarregado de educação aberto e a caixa de resposta">';
+
+  if (S.view === 'ready' && !S.guide) {
+    h += `<div class="bar"><div class="bar-card">
+      <span class="badge">${SPARK(18)}</span>
+      <div class="bar-text"><strong>Quer ajuda com este pedido?</strong><span>O assistente pode preparar uma lista do que a resposta deve tratar. Só lê o email se clicar.</span></div>
+      <button class="btn-primary" data-a="askList">Preparar a lista</button>
+      <button class="btn-quiet" data-a="decline">Não, obrigado</button>
+    </div><span class="mail-hint">Ou escreva a sua resposta aqui, como sempre.</span></div>`;
+  }
+  if (S.view === 'declined') h += `<button class="chip" data-a="reopen">${SPARK(15)} Mostrar assistente</button>`;
+
+  if (S.view === 'working' || S.view === 'list') h += renderMail() + renderPanel();
+  if (S.guide) h += renderGuide();
+
+  f.innerHTML = h;
+  if (active) { const el = document.getElementById(active.id); if (el) { el.focus(); if (el.setSelectionRange && active.pos != null) el.setSelectionRange(active.pos, active.pos); } }
+}
+
+function renderMail() {
+  const paras = [];
+  S.crit.forEach(c => {
+    if (c.ai) {
+      const segs = (PARAS[c.id] || [{ k: '_none', t: 'texto sobre ' + c.desc.replace(/\.$/, '') }]).map(x =>
+        x.k ? (has(x.k) ? esc(S.values[x.k]) : `<span class="slot">${esc(x.t)}</span>`) : esc(x.t)).join('');
+      paras.push(`<p>${segs}</p>`);
+    } else if (c.done) {
+      paras.push(USER_TEXT[c.id] ? `<p>${esc(USER_TEXT[c.id])}</p>` : `<p class="yours">(o seu texto sobre «${esc(c.title)}»)</p>`);
+    }
+  });
+  if (!paras.length) return `<div class="mail"><p class="placeholder">Escreva aqui a sua resposta, usando a lista como guia. Ou clique em Gerar resposta.</p></div>`;
+  return `<div class="mail"><p>Caro Pedro Valente,</p><p>Obrigado pelo seu contacto sobre a Licenciatura em Análise e Engenharia de Dados.</p>${paras.join('')}<p>Com os melhores cumprimentos,<br>Divisão Académica</p></div>`;
+}
+
+function renderPanel() {
+  let h = `<aside class="panel" aria-label="Assistente DALM"><div class="panel-head"><span class="badge sm">${SPARK(13)}</span><strong>Assistente DALM</strong>
+    <button class="link" data-a="openHelp">Como funciona</button><button class="link muted" data-a="hide">Esconder</button></div>`;
+
+  if (S.view === 'working') {
+    h += `<div class="steps">` + S.stepTexts.map((t, i) => `<div class="step ${i > S.stepIdx ? 'pending' : ''}">${i < S.stepIdx ? TICK(18, '#2F8A63', 2.6) : '<span aria-hidden="true" style="width:18px;text-align:center;color:#8FB3A3;font-weight:700">…</span>'}<span>${esc(t)}</span></div>`).join('') +
+      `<button class="btn-secondary" style="align-self:flex-start" data-a="cancel">Cancelar</button></div></aside>`;
+    return h;
+  }
+
+  if (S.editing) {
+    h += `<div style="padding:12px 18px;border-bottom:1px solid var(--panel-line);display:flex;flex-direction:column;gap:2px"><strong style="font-size:15px;color:var(--green-900)">A editar a lista</strong><span style="font-size:13px;color:var(--ink-2)">Mude o texto, apague ou acrescente pontos. A lista é sua.</span></div>
+      <div class="panel-body" style="gap:8px">` +
+      S.crit.map(c => `<div class="edit"><input id="edit-${c.id}" aria-label="Ponto da lista" value="${esc(c.title + ': ' + c.desc)}" data-edit="${c.id}"><button class="btn-danger" data-a="removeCrit" data-id="${c.id}">Apagar</button></div>`).join('') +
+      `<form class="edit" data-form="add"><input id="new-crit" class="new" aria-label="Novo ponto" placeholder="Novo ponto, ex.: Contacto: indicar a quem perguntar" value="${esc(S.newText)}" data-new="1"><button class="btn-add" type="submit">Acrescentar</button></form></div>
+      <div class="panel-foot" style="flex-direction:row"><button class="btn-primary" style="font-size:14px;min-height:42px" data-a="finishEdit">Concluir</button><button class="btn-quiet" style="font-size:14px" data-a="cancelEdit">Cancelar alterações</button></div></aside>`;
+    return h;
+  }
+
+  const anyAI = S.crit.some(c => c.ai);
+  const toWrite = S.crit.filter(c => !c.done && !c.ai);
+  const doneCount = S.crit.filter(c => c.done).length;
+  const totalNeeds = S.crit.reduce((n, c) => n + c.needs.length, 0);
+
+  h += `<div class="panel-body">
+    <div style="display:flex;flex-direction:column;gap:6px">
+      <div class="summary">${TICK(15, '#5F8F7C', 2.6)}<span>${anyAI ? 'Escrevi os pontos que estavam por marcar' : 'Li o email e preparei esta lista'}</span>
+      <button class="link" aria-expanded="${S.stepsOpen}" data-a="toggleSteps">${S.stepsOpen ? 'Esconder passos' : 'Ver passos'}</button></div>
+      ${S.stepsOpen ? `<ul class="steplist"><li>Li o email</li><li>Percebi o pedido</li><li>Procurei a informação nas fontes a que tenho acesso</li><li>Não encontrei ${totalNeeds} informações (marcadas abaixo)</li></ul>` : ''}
+    </div>
+    <p class="request"><strong>O pedido:</strong> ${esc(LIST.request)}</p>
+    <div style="display:flex;flex-direction:column;gap:8px">
+      <div class="section-head"><strong>A resposta deve tratar:</strong><span>${doneCount} de ${S.crit.length} tratados</span></div>
+      <span class="hint">${anyAI ? 'Marque cada ponto quando estiver satisfeito com o texto.' : 'Marque os pontos que já tratou. O assistente só escreve os que ficarem por marcar.'}</span>
+      <ul class="crit">` + S.crit.map(c => {
+        const missing = c.needs.filter(n => !has(n.key));
+        let status = '', cls = '';
+        if (c.ai && !c.done) { status = 'Escrito pelo assistente · leia o texto e marque'; cls = 'review'; }
+        else if (c.ai && c.done) status = 'Escrito pelo assistente · revisto por si';
+        else if (c.done) status = 'Tratado por si';
+        const showFields = !c.done || missing.length > 0;
+        return `<li class="${c.ai && !c.done ? 'review' : ''}">
+          <button class="check ${c.ai ? 'ai' : ''}" role="checkbox" aria-checked="${c.done}" aria-label="Marcar «${esc(c.title)}» como tratado" data-a="toggle" data-id="${c.id}">${c.done ? TICK(14, 'currentColor', 3) : ''}</button>
+          <div class="crit-main"><span class="crit-text ${c.done ? 'done' : ''}"><strong>${esc(c.title)}</strong>: ${esc(c.desc)}</span>
+          ${status ? `<span class="status ${cls}">${status}</span>` : ''}
+          ${showFields ? c.needs.map(n => `<div class="field"><label for="need-${n.key}">${esc(n.label)}</label><input id="need-${n.key}" class="${has(n.key) ? 'filled' : ''}" placeholder="não encontrei" value="${esc(S.values[n.key] || '')}" data-key="${n.key}"></div>`).join('') : ''}
+          </div></li>`;
+      }).join('') + `</ul></div>
+    <div style="display:flex;flex-direction:column;gap:6px"><strong style="font-size:14px">Fora do email, faz você:</strong>
+      <div class="outside"><button class="check" role="checkbox" aria-checked="${S.outsideDone}" aria-label="Marcar como feito: ${esc(LIST.outside)}" data-a="toggleOutside">${S.outsideDone ? TICK(14, 'currentColor', 3) : ''}</button><span class="${S.outsideDone ? 'done' : ''}">${esc(LIST.outside)}</span></div>
+    </div></div>`;
+
+  const missingInText = S.crit.filter(c => c.ai).reduce((n, c) => n + c.needs.filter(x => !has(x.key)).length, 0);
+  const unreviewed = S.crit.filter(c => c.ai && !c.done).length;
+  let msg = '', warn = false;
+  if (missingInText > 0) { msg = missingInText === 1 ? 'Falta 1 informação, a amarelo no texto.' : `Faltam ${missingInText} informações, a amarelo no texto.`; warn = true; }
+  else if (unreviewed > 0) msg = 'Leia o texto do assistente e marque cada ponto.';
+  else if (doneCount === S.crit.length && S.crit.length) msg = S.outsideDone ? 'Tudo tratado. Envie quando quiser.' : 'Resposta tratada. Falta a tarefa fora do email.';
+
+  h += `<div class="panel-foot">${msg ? `<span class="message ${warn ? 'warn' : ''}">${msg}</span>` : ''}<div class="row">
+    ${toWrite.length ? `<button class="btn-primary" data-a="generate">${SPARK(15)} ${toWrite.length === S.crit.length ? 'Gerar resposta' : `Gerar o que falta (${toWrite.length})`}</button>` : ''}
+    ${anyAI ? `<button class="btn-secondary" data-a="regenerate">Gerar outra versão</button><button class="link muted" data-a="removeAI">Retirar texto do assistente</button>` : `<button class="link" data-a="startEdit">Editar lista</button>`}
+    </div><label class="persist"><input type="checkbox" id="always" ${S.always ? 'checked' : ''} data-a="toggleAlways">Preparar esta lista sempre que abro uma resposta (fica guardado)</label></div></aside>`;
+  return h;
+}
+
+function renderGuide() {
+  return `<div class="guide" role="dialog" aria-label="Como funciona o Assistente DALM"><span class="eyebrow">Assistente DALM · opcional</span>
+    <strong>Uma ajuda para não esquecer nada nas respostas</strong><ol>
+    <li><span class="num">1</span><span>Clique em <strong>Preparar a lista</strong>. O assistente diz o que percebeu do pedido e o que a resposta deve tratar.</span></li>
+    <li><span class="num">2</span><span>Marque os pontos que já tratou. Se faltar informação, preencha-a ou deixe em branco.</span></li>
+    <li><span class="num">3</span><span>Se quiser, clique em <strong>Gerar o que falta</strong>: o assistente só escreve os pontos por marcar. Leia o texto e marque cada ponto. <strong>Nada é enviado sem si.</strong></span></li>
+    </ol><div><button class="btn-primary" data-a="closeGuide">Percebi</button></div></div>`;
+}
+
+/* ---------- Actions ---------- */
+const A = {
+  askList: () => { log('list_requested'); runSteps(['A ler o email', 'A perceber o pedido', 'A procurar a informação nas fontes a que tenho acesso'], { view: 'list', hadList: true, crit: freshCrit(), values: {} }); },
+  decline: () => { log('assistant_declined'); set({ view: 'declined' }); },
+  reopen: () => set({ view: S.hadList ? 'list' : 'ready' }),
+  hide: () => { clearTimeout(timer); log('panel_hidden'); set({ view: 'declined', hadList: true }); },
+  cancel: () => { clearTimeout(timer); set({ view: S.hadList ? 'list' : 'ready' }); },
+  openHelp: () => { log('guide_opened'); set({ guide: true }); },
+  closeGuide: () => set({ guide: false }),
+  toggleSteps: () => set({ stepsOpen: !S.stepsOpen }),
+  toggle: el => { const id = el.dataset.id; const c = S.crit.find(x => x.id === id); log(c.done ? 'point_unticked' : 'point_ticked', { id, ai: c.ai }); set({ crit: S.crit.map(x => x.id === id ? { ...x, done: !x.done } : x) }); },
+  toggleOutside: () => set({ outsideDone: !S.outsideDone }),
+  generate: () => { const ids = S.crit.filter(c => !c.done && !c.ai).map(c => c.id); log('generate_clicked', { points: ids }); runSteps(['A juntar a lista e a informação que me deu', 'A escrever os pontos por marcar'], s => ({ view: 'list', crit: s.crit.map(x => ids.includes(x.id) ? { ...x, ai: true } : x) })); },
+  regenerate: () => { log('regenerate_clicked'); runSteps(['A escrever outra versão'], { view: 'list' }); },
+  removeAI: () => { log('ai_text_removed'); set({ crit: S.crit.map(x => x.ai ? { ...x, ai: false, done: false } : x) }); },
+  startEdit: () => set({ editing: true, snapshot: S.crit }),
+  finishEdit: () => { log('list_edited'); set({ editing: false }); },
+  cancelEdit: () => set({ editing: false, crit: S.snapshot || S.crit }),
+  removeCrit: el => set({ crit: S.crit.filter(x => x.id !== el.dataset.id) }),
+  toggleAlways: () => set({ always: !S.always })
+};
+
+const frame = document.getElementById('frame');
+frame.addEventListener('click', e => {
+  const el = e.target.closest('[data-a]');
+  if (!el || el.tagName === 'INPUT') return;
+  A[el.dataset.a] && A[el.dataset.a](el);
+});
+frame.addEventListener('change', e => { if (e.target.dataset.a === 'toggleAlways') A.toggleAlways(); });
+frame.addEventListener('input', e => {
+  const t = e.target;
+  if (t.dataset.key) { log('value_entered', { key: t.dataset.key }); set({ values: { ...S.values, [t.dataset.key]: t.value } }); }
+  else if (t.dataset.edit) {
+    const v = t.value, i = v.indexOf(':');
+    const patch = i >= 0 ? { title: v.slice(0, i).trim(), desc: v.slice(i + 1).trim() } : { title: v.trim(), desc: '' };
+    set({ crit: S.crit.map(x => x.id === t.dataset.edit ? { ...x, ...patch } : x) });
+  } else if (t.dataset.new) set({ newText: t.value });
+});
+frame.addEventListener('submit', e => {
+  e.preventDefault();
+  const v = S.newText.trim(); if (!v) return;
+  const i = v.indexOf(':');
+  const item = i >= 0 ? { title: v.slice(0, i).trim(), desc: v.slice(i + 1).trim() } : { title: v, desc: '' };
+  set({ newText: '', crit: S.crit.concat([{ id: 'n' + Date.now(), needs: [], done: false, ai: false, ...item }]) });
+});
+document.querySelectorAll('.devbar [data-preset]').forEach(b => b.addEventListener('click', () => { clearTimeout(timer); S = initial(b.dataset.preset); render(); }));
+render();
+</script>
+</body>
+</html>

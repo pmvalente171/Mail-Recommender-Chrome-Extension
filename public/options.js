@@ -1,1 +1,1 @@
-navigator.webkitGetUserMedia({ audio: true })
+// Options page logic — to be implemented.
